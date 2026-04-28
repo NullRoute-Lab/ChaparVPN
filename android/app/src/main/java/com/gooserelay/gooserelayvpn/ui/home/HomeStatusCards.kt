@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import com.gooserelay.gooserelayvpn.R
 import com.gooserelay.gooserelayvpn.ui.components.mdv.cards.MdvCardHigh
 import com.gooserelay.gooserelayvpn.ui.components.mdv.cards.MdvCardLow
+import com.gooserelay.gooserelayvpn.ui.theme.DisconnectedRed
 import com.gooserelay.gooserelayvpn.ui.theme.MdvColor
 import com.gooserelay.gooserelayvpn.ui.theme.MdvSpace
 import com.gooserelay.gooserelayvpn.util.VpnManager
@@ -65,18 +66,6 @@ fun MdvConnectionTelemetryCard(
                         .height(8.dp),
                     color = MdvColor.PrimaryContainer,
                     trackColor = MdvColor.SurfaceBright
-                )
-            }
-            if (scanStatus.syncedUploadMtu > 0 || scanStatus.syncedDownloadMtu > 0) {
-                androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = stringResource(
-                        R.string.home_synced_mtu,
-                        scanStatus.syncedUploadMtu,
-                        scanStatus.syncedDownloadMtu
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MdvColor.OnSurfaceVariant
                 )
             }
             androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(MdvSpace.S1))

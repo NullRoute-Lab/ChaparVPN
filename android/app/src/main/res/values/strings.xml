@@ -9,7 +9,6 @@
     <string name="action_import_json">Import JSON</string>
     <string name="action_export_json">Export JSON</string>
     <string name="action_import_json_profile">Import JSON</string>
-    <string name="action_pick_mtu_destination">Pick MTU export destination</string>
     <string name="action_save_settings">Save Settings</string>
     <string name="settings_no_profile_title">No selected profile</string>
     <string name="settings_no_profile_desc">Create/select a profile in Profiles tab, then configure client_config values here.</string>
@@ -18,7 +17,6 @@
     <string name="settings_json_exported_msg">JSON exported</string>
     <string name="settings_json_imported_msg">JSON imported to form</string>
     <string name="settings_json_profile_imported_msg">Profile imported from JSON</string>
-    <string name="settings_mtu_destination_msg">MTU export destination selected</string>
     <string name="settings_dns_root_warning">⚠ Port %1$d requires root access on Android. The app will automatically use port 5353 instead.</string>
     <string name="global_settings_saved_msg">Global settings saved and applied</string>
     <string name="global_settings_ports_required_msg">Please enter both SOCKS5 and HTTP ports.</string>
@@ -61,7 +59,6 @@
     <string name="home_valid_prefix">Valid: </string>
     <string name="home_rejected_prefix">   Rejected: </string>
     <string name="home_relay_scan_progress">Relay Scan Progress: %1$d / %2$d</string>
-    <string name="home_synced_mtu">Synced MTU: UP %1$d / DOWN %2$d</string>
     <string name="home_active_relays">Active Relays: %1$d</string>
     <string name="home_speed_row">Download: %1$s   Upload: %2$s</string>
     <string name="home_socks_address">SOCKS5: %1$s:%2$d</string>

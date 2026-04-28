@@ -4,7 +4,6 @@ import android.app.Notification
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
-import android.net.Uri
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
@@ -19,7 +18,6 @@ import com.gooserelay.gooserelayvpn.util.GlobalSettingsStore
 import com.gooserelay.gooserelayvpn.util.VpnManager
 import kotlinx.coroutines.*
 import java.io.File
-import java.io.FileInputStream
 import java.io.RandomAccessFile
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -81,8 +79,6 @@ class GooseRelayVpnService : VpnService() {
     private var sharingSocksJob: Job? = null
     private var logTailJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
-    private var mtuExportTargetUri: String? = null
-    private var mtuConfigDir: File? = null
     @Volatile
     private var isStopping = false
     @Volatile
@@ -142,8 +138,6 @@ class GooseRelayVpnService : VpnService() {
                 configDir.mkdirs()
 
                 val configFile = File(configDir, "client_config.json")
-                mtuExportTargetUri = null
-                mtuConfigDir = null
                 configFile.writeText(ConfigGenerator.generateConfig(profile))
 
                 VpnManager.appendLog("Config written to: ${configFile.absolutePath}")
@@ -325,7 +319,6 @@ class GooseRelayVpnService : VpnService() {
                 VpnManager.updateState(VpnManager.VpnState.DISCONNECTED)
                 VpnManager.stopTrafficMonitor()
                 VpnManager.appendLog("VPN disconnected")
-                exportMtuResultsIfNeeded()
                 releaseWakeLock()
 
                 runCatching {
@@ -417,54 +410,6 @@ class GooseRelayVpnService : VpnService() {
         } catch (_: Exception) {
             false
         }
-    }
-
-    private fun exportMtuResultsIfNeeded() {
-        val target = mtuExportTargetUri?.takeIf { it.isNotBlank() } ?: return
-        val dir = mtuConfigDir ?: return
-        val sourceFile = resolveMtuResultsSourceFile(dir)
-        if (sourceFile == null) {
-            VpnManager.appendLog("MTU export skipped: no results generated")
-            return
-        }
-        runCatching {
-            val uri = Uri.parse(target)
-            runCatching {
-                grantUriPermission(
-                    packageName,
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-            }
-            runCatching {
-                contentRelay.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-            }
-            contentRelay.openOutputStream(uri, "wt")?.use { out ->
-                FileInputStream(sourceFile).use { input -> input.copyTo(out) }
-            } ?: error("Cannot open selected destination")
-        }.onSuccess {
-            VpnManager.appendLog("MTU results exported to selected destination")
-            VpnManager.appendLog("Exported file: ${sourceFile.absolutePath}")
-        }.onFailure {
-            VpnManager.appendLog("MTU export failed: ${it.message}")
-        }
-    }
-
-    private fun resolveMtuResultsSourceFile(dir: File): File? {
-        repeat(5) {
-            val sourceFile = dir.listFiles()
-                ?.asSequence()
-                ?.filter { it.isFile && it.name.startsWith("gooserelayvpn_success_test") && it.length() > 0L }
-                ?.maxByOrNull { it.lastModified() }
-            if (sourceFile != null) {
-                return sourceFile
-            }
-            Thread.sleep(200L)
-        }
-        return null
     }
 
     private suspend fun ensureSocksPortAvailable(port: Int) {
