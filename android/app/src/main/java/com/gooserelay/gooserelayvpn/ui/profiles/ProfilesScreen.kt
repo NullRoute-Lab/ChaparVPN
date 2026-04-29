@@ -250,7 +250,7 @@ private fun ProfileEditorDialog(
                 }
                 validationError?.let {
                     Spacer(Modifier.height(8.dp))
-                    Text(it, color = MaterialTheme.colorScheme.error)
+                    Text(it, color = MdvColor.Error)
                 }
                 Spacer(Modifier.height(2.dp))
             }
