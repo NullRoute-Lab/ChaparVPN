@@ -546,14 +546,14 @@ class GooseRelayVpnService : VpnService() {
         wakeLock = null
     }
 
-    private fun startInternetSharing(socksPort: Int, httpPort: Int, username: String, password: String) {
+    private suspend fun startInternetSharing(socksPort: Int, httpPort: Int, username: String, password: String) {
         // Ensure ports are available before starting
         if (isLocalPortInUse(socksPort) || isLocalPortInUse(httpPort)) {
             VpnManager.appendLog("Sharing ports in use, attempting to free...")
             if (mobile.Mobile.isRunning()) {
                 runCatching { mobile.Mobile.stopClient() }
             }
-            kotlinx.coroutines.delay(500L)
+            delay(500L)
         }
 
         sharingSocksJob?.cancel()

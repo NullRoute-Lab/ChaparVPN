@@ -55,12 +55,14 @@ import com.gooserelay.gooserelayvpn.ui.components.mdv.controls.MdvBackTopAppBar
 import com.gooserelay.gooserelayvpn.ui.theme.ConnectedGreen
 import com.gooserelay.gooserelayvpn.ui.theme.MdvColor
 import com.gooserelay.gooserelayvpn.ui.theme.MdvSpace
+import com.gooserelay.gooserelayvpn.ui.profiles.ProfilesViewModel
 import com.gooserelay.gooserelayvpn.util.ConfigGenerator
 
 @Composable
 fun ProfilesScreen(
     onBack: () -> Unit
 ) {
+    val viewModel: ProfilesViewModel = hiltViewModel()
     val profiles by viewModel.profiles.collectAsState()
     val context = LocalContext.current
     var showEditor by remember { mutableStateOf(false) }
