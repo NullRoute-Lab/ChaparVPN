@@ -294,7 +294,10 @@ class GooseRelayVpnService : VpnService() {
     private fun stopVpn() {
         if (isStopping) return
         isStopping = true
-        serviceScope.launch {
+        
+        VpnManager.updateState(VpnManager.VpnState.DISCONNECTING)
+        
+        serviceScope.launch(Dispatchers.IO) {
             try {
                 connectJob?.cancel()
                 VpnManager.appendLog("Stopping VPN...")
@@ -425,11 +428,14 @@ class GooseRelayVpnService : VpnService() {
                 mobile.Mobile.stopClient()
             }
         }
-        delay(400L)
 
-        if (!isLocalPortInUse(port)) {
-            VpnManager.appendLog("SOCKS5 port $port released successfully")
-            return
+        repeat(5) {
+            delay(400L)
+            if (!isLocalPortInUse(port)) {
+                VpnManager.appendLog("SOCKS5 port $port released successfully")
+                return
+            }
+            VpnManager.appendLog("SOCKS5 port $port still busy, retrying...")
         }
 
         throw IllegalStateException("SOCKS5 port $port is already in use. Change LISTEN_PORT or close the app using it.")
@@ -439,7 +445,15 @@ class GooseRelayVpnService : VpnService() {
         if (!mobile.Mobile.isRunning()) return
         VpnManager.appendLog("Go core is still running, stopping it first...")
         runCatching { mobile.Mobile.stopClient() }
-        delay(500L)
+        
+        repeat(5) {
+            delay(300L)
+            if (!mobile.Mobile.isRunning()) {
+                VpnManager.appendLog("Go core stopped successfully")
+                return
+            }
+        }
+        VpnManager.appendLog("Warning: Go core may still be running")
     }
 
     private fun isLocalPortInUse(port: Int): Boolean {
