@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">GooseRelayVPN</string>
+    <string name="app_name">GooseRelayVPN-HN</string>
     <string name="settings_title">Settings</string>
     <string name="profile_settings_title">Profile Settings</string>
     <string name="action_save">Save</string>
@@ -98,7 +98,7 @@
     <string name="logs_clear">Clear Logs</string>
     <string name="logs_auto_on">Auto ON</string>
     <string name="logs_auto_off">Auto OFF</string>
-    <string name="logs_share_subject">GooseRelayVPN Logs</string>
+    <string name="logs_share_subject">GooseRelayVPN-HN Logs</string>
     <string name="logs_share_chooser">Share Logs</string>
     <string name="logs_filter_all">All</string>
     <string name="logs_filter_core">Core</string>
@@ -121,7 +121,7 @@
     <string name="global_username">Username</string>
     <string name="global_password">Password</string>
     <string name="global_sharing_help">Use these endpoints to share your VPN connection with other devices or apps on the same network.</string>
-    <string name="info_app_name_title">GooseRelayVPN</string>
+    <string name="info_app_name_title">GooseRelayVPN-HN</string>
     <string name="info_overview_subtitle">Project overview and build details</string>
     <string name="info_build_information">Build Information</string>
     <string name="info_project_links">Project Links</string>
