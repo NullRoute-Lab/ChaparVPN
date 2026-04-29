@@ -64,7 +64,7 @@ object VpnManager {
     private val monitorScope = CoroutineScope(Dispatchers.Default)
     private var trafficMonitorJob: Job? = null
 
-    private const val MAX_LOG_LINES = 500
+    private const val MAX_LOG_LINES = 2000
 
     fun updateState(newState: VpnState) {
         _state.value = newState
