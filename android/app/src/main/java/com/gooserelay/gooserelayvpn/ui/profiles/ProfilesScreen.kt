@@ -25,7 +25,6 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PersonAdd
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -59,9 +58,7 @@ import com.gooserelay.gooserelayvpn.util.ConfigGenerator
 
 @Composable
 fun ProfilesScreen(
-    viewModel: ProfilesViewModel = hiltViewModel(),
-    onBack: () -> Unit,
-    onOpenSettings: (Long) -> Unit
+    onBack: () -> Unit
 ) {
     val profiles by viewModel.profiles.collectAsState()
     val context = LocalContext.current
@@ -138,9 +135,6 @@ fun ProfilesScreen(
 
                             IconButton(onClick = { editing = profile; showEditor = true }) {
                                 Icon(Icons.Filled.Edit, contentDescription = "Edit")
-                            }
-                            IconButton(onClick = { onOpenSettings(profile.id) }) {
-                                Icon(Icons.Filled.Settings, contentDescription = "Settings")
                             }
                             IconButton(onClick = { viewModel.deleteProfile(profile) }) {
                                 Icon(Icons.Filled.Delete, contentDescription = "Delete")

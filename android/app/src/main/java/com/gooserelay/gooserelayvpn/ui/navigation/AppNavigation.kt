@@ -122,10 +122,7 @@ fun AppNavigation() {
             }
             composable(Screen.Profiles.route) {
                 ProfilesScreen(
-                    onBack = { navigateToRoot(Screen.Home) },
-                    onOpenSettings = { profileId ->
-                        navController.navigate("profile_settings/$profileId")
-                    }
+                    onBack = { navigateToRoot(Screen.Home) }
                 )
             }
             composable(Screen.Logs.route) {
