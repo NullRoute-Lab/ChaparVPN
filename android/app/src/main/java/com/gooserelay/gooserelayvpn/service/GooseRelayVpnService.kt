@@ -77,6 +77,8 @@ class GooseRelayVpnService : VpnService() {
     private var goClientJob: Job? = null
     private var httpProxyJob: Job? = null
     private var sharingSocksJob: Job? = null
+    private var sharingSocksServer: java.net.ServerSocket? = null
+    private var sharingHttpServer: java.net.ServerSocket? = null
     private var logTailJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     @Volatile
@@ -323,6 +325,12 @@ class GooseRelayVpnService : VpnService() {
                 sharingSocksJob?.cancel()
                 logTailJob?.cancel()
 
+                // Close sharing servers
+                runCatching { sharingSocksServer?.close() }
+                sharingSocksServer = null
+                runCatching { sharingHttpServer?.close() }
+                sharingHttpServer = null
+
                 VpnManager.updateState(VpnManager.VpnState.DISCONNECTED)
                 VpnManager.stopTrafficMonitor()
                 VpnManager.appendLog("VPN disconnected")
@@ -539,11 +547,24 @@ class GooseRelayVpnService : VpnService() {
     }
 
     private fun startInternetSharing(socksPort: Int, httpPort: Int, username: String, password: String) {
+        // Ensure ports are available before starting
+        if (isLocalPortInUse(socksPort) || isLocalPortInUse(httpPort)) {
+            VpnManager.appendLog("Sharing ports in use, attempting to free...")
+            if (mobile.Mobile.isRunning()) {
+                runCatching { mobile.Mobile.stopClient() }
+            }
+            kotlinx.coroutines.delay(500L)
+        }
+
         sharingSocksJob?.cancel()
+        sharingSocksServer?.close()
+        sharingSocksServer = null
+
         sharingSocksJob = serviceScope.launch {
             try {
                 val server = java.net.ServerSocket(socksPort, 50, InetAddress.getByName("0.0.0.0"))
                 server.reuseAddress = true
+                sharingSocksServer = server
                 VpnManager.appendLog("Sharing SOCKS5 proxy ready on 0.0.0.0:$socksPort")
                 while (isActive) {
                     val client = server.accept() ?: continue
@@ -558,10 +579,14 @@ class GooseRelayVpnService : VpnService() {
         }
 
         httpProxyJob?.cancel()
+        sharingHttpServer?.close()
+        sharingHttpServer = null
+
         httpProxyJob = serviceScope.launch {
             try {
                 val server = java.net.ServerSocket(httpPort, 50, InetAddress.getByName("0.0.0.0"))
                 server.reuseAddress = true
+                sharingHttpServer = server
                 VpnManager.appendLog("HTTP proxy ready on 0.0.0.0:$httpPort")
                 while (isActive) {
                     val client = server.accept() ?: continue
