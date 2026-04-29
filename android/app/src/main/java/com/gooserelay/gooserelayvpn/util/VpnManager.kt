@@ -53,9 +53,6 @@ object VpnManager {
     val downloadSpeedBps: StateFlow<Long> = _downloadSpeedBps.asStateFlow()
 
     data class ScanStatus(
-        val scanning: Boolean = false,
-        val syncedUploadMtu: Int = 0,
-        val syncedDownloadMtu: Int = 0,
         val statsActive: Int = 0,
         val statsSessionsOpen: Int = 0,
         val statsSessionsClose: Int = 0,
@@ -190,10 +187,10 @@ object VpnManager {
             }
     }
 
-    private fun parseScanLine(line: String) {
+private fun parseScanLine(line: String) {
         // Parse STATS line
         val statsMatch = Regex(
-            "active=(\\d+)\\s+sessions\\(open=(\\d+)\\s+close=(\\d+)\\)\\s+frames\\(out=(\\d+)\\s+in=(\\d+)\\)\\s+bytes\\(out=([0-9.]+)([KMG]?)\\s+in=([0-9.]+)([KMG]?)\\)",
+            "active=(\\d+)\\s+sessions\\(open=(\\d+)\\s+close=(\\d+)\\)\\s+frames\\(out=(\\d+)\\s+in=(\\d+)\\)\\s+bytes\\(out=([0-9.]+)([KMG]?)\\s+in=([0-9.]+)([KMG]?)\\)\\s+polls\\(ok=(\\d+)\\s+fail=(\\d+)\\)",
             RegexOption.IGNORE_CASE
         ).find(line)
         if (statsMatch != null) {
@@ -204,33 +201,12 @@ object VpnManager {
                 statsSessionsOpen = statsMatch.groupValues[2].toIntOrNull() ?: 0,
                 statsSessionsClose = statsMatch.groupValues[3].toIntOrNull() ?: 0,
                 statsBytesOut = bytesOut,
-                statsBytesIn = bytesIn
+                statsBytesIn = bytesIn,
+                statsPollsOk = statsMatch.groupValues[9].toIntOrNull() ?: 0,
+                statsPollsFail = statsMatch.groupValues[10].toIntOrNull() ?: 0
             )
-            return
         }
-
-        val syncedMatch = Regex(
-            "Selected Synced Upload MTU:\\s*(\\d+)\\s*\\|\\s*Selected Synced Download MTU:\\s*(\\d+)",
-            RegexOption.IGNORE_CASE
-        ).find(line)
-        if (syncedMatch != null) {
-            _scanStatus.value = _scanStatus.value.copy(
-                syncedUploadMtu = syncedMatch.groupValues[1].toIntOrNull() ?: 0,
-                syncedDownloadMtu = syncedMatch.groupValues[2].toIntOrNull() ?: 0
-            )
-            return
-        }
-
-        if (line.contains("Testing MTU sizes", ignoreCase = true)) {
-            _scanStatus.value = _scanStatus.value.copy(scanning = true)
-            return
-        }
-
-        if (line.contains("MTU Testing Completed", ignoreCase = true) ||
-            line.contains("Session Initialized Successfully", ignoreCase = true)
-        ) {
-            _scanStatus.value = _scanStatus.value.copy(scanning = false)
-        }
+    }
     }
 
     private fun parseBytes(value: String, unit: String): Long {

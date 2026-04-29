@@ -178,7 +178,7 @@ class GooseRelayVpnService : VpnService() {
                     }
                 }
 
-                // Wait until SOCKS5 is actually listening. MTU test/session init may take a few minutes.
+                // Wait until SOCKS5 is actually listening.
                 waitForSocksProxyReady(
                     host = "127.0.0.1",
                     port = socksPort,
@@ -475,7 +475,7 @@ class GooseRelayVpnService : VpnService() {
     }
 
     private suspend fun tailLogFile(logFile: File) {
-        // Continuously mirrors Go log file into Compose logs so Android UI shows real MTU/session progress.
+        // Continuously mirrors Go log file into Compose logs so Android UI shows real progress.
         RandomAccessFile(logFile, "r").use { raf ->
             var pointer = 0L
             while (coroutineContext.isActive) {
