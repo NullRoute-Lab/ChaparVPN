@@ -13,12 +13,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PersonAdd
@@ -26,6 +28,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -48,6 +51,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.gooserelay.gooserelayvpn.data.local.ProfileEntity
 import com.gooserelay.gooserelayvpn.ui.components.mdv.controls.MdvBackTopAppBar
+import com.gooserelay.gooserelayvpn.ui.theme.ConnectedGreen
 import com.gooserelay.gooserelayvpn.ui.theme.MdvColor
 import com.gooserelay.gooserelayvpn.ui.theme.MdvSpace
 import com.gooserelay.gooserelayvpn.util.ConfigGenerator
@@ -102,20 +106,43 @@ fun ProfilesScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(profiles) { profile ->
-                    Card(onClick = { viewModel.selectProfile(profile.id) }, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text(profile.name)
-                            Text("${profile.socksHost}:${profile.socksPort}")
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                IconButton(onClick = { editing = profile; showEditor = true }) {
-                                    Icon(Icons.Filled.Edit, contentDescription = "Edit")
-                                }
-                                IconButton(onClick = { onOpenSettings(profile.id) }) {
-                                    Icon(Icons.Filled.Settings, contentDescription = "Settings")
-                                }
-                                IconButton(onClick = { viewModel.deleteProfile(profile) }) {
-                                    Icon(Icons.Filled.Delete, contentDescription = "Delete")
-                                }
+                    Card(
+                        onClick = { viewModel.selectProfile(profile.id) },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (profile.isSelected)
+                                MdvColor.PrimaryContainer.copy(alpha = 0.16f)
+                            else
+                                MdvColor.SurfaceHigh
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (profile.isSelected) {
+                                Icon(
+                                    Icons.Filled.CheckCircle,
+                                    contentDescription = "Selected",
+                                    tint = ConnectedGreen,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(profile.name)
+                                Text("${profile.socksHost}:${profile.socksPort}")
+                            }
+
+                            IconButton(onClick = { editing = profile; showEditor = true }) {
+                                Icon(Icons.Filled.Edit, contentDescription = "Edit")
+                            }
+                            IconButton(onClick = { onOpenSettings(profile.id) }) {
+                                Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                            }
+                            IconButton(onClick = { viewModel.deleteProfile(profile) }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "Delete")
                             }
                         }
                     }
