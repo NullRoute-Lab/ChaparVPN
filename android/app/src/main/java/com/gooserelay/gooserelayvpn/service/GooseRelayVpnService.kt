@@ -3,6 +3,8 @@ package com.gooserelay.gooserelayvpn.service
 import android.app.Notification
 import android.app.PendingIntent
 import android.content.Intent
+import com.gooserelay.gooserelayvpn.dns.FakeDnsServer
+import com.gooserelay.gooserelayvpn.dns.FakeDnsInterceptor
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -82,6 +84,8 @@ class GooseRelayVpnService : VpnService() {
     private var logTailJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     @Volatile
+    private var fakeDnsServer: FakeDnsServer? = null
+    private var fakeDnsInterceptor: FakeDnsInterceptor? = null
     private var isStopping = false
     @Volatile
     private var socksAuthWarningShown = false
@@ -205,16 +209,74 @@ class GooseRelayVpnService : VpnService() {
                     return@launch
                 }
 
-                // GooseRelay core does not expose a local DNS mode. Always route DNS
-                // through the VPN path using public resolvers.
-                val vpnDnsServer = "8.8.8.8"
+                // Fake DNS mode: intercept DNS packets and return fake IPs
+                if (globalSettings.fakeDnsEnabled) {
+                    VpnManager.appendLog("Fake DNS mode enabled")
+                    
+                    // Start fake DNS server on TUN interface
+                    fakeDnsServer = FakeDnsServer("10.0.0.1", 53)
+                    fakeDnsServer?.start()
+                    VpnManager.appendLog("Fake DNS server started on 10.0.0.1:53")
+                    
+                    // Start interceptor proxy that translates fake IPs to real hostnames
+                    fakeDnsInterceptor = FakeDnsInterceptor(
+                        listenPort = 10800,
+                        upstreamHost = "127.0.0.1",
+                        upstreamPort = socksPort,
+                        fakeDnsServer = fakeDnsServer!!
+                    )
+                    fakeDnsInterceptor?.start()
+                    VpnManager.appendLog("Fake DNS interceptor started on port 10800")
+                    
+                    // Wait a bit for servers to start
+                    delay(500)
+                }
+
+                // DNS configuration: use custom DNS servers if provided, otherwise use defaults.
+                // For remote DNS resolution (to bypass filtered DNS in Iran), configure custom
+                // DNS servers that are accessible through the VPN tunnel (e.g., your VPS IP or
+                // public DNS servers that will be routed through the tunnel).
+                val vpnDnsServers = if (globalSettings.customDnsServers.isNotBlank()) {
+                    globalSettings.customDnsServers
+                        .split(",")
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .also { servers ->
+                            VpnManager.appendLog("Using custom DNS servers: ${servers.joinToString()}")
+                        }
+                } else if (globalSettings.fakeDnsEnabled) {
+                    // In fake DNS mode, point to our fake DNS server
+                    listOf("10.0.0.1").also {
+                        VpnManager.appendLog("Using fake DNS server: 10.0.0.1")
+                    }
+                } else {
+                    // Default: multiple public resolvers to reduce startup stalls on filtered networks.
+                    // Note: In TUN mode, DNS resolution happens on the client side before traffic
+                    // enters the tunnel. For true remote DNS resolution, either:
+                    // 1. Use Proxy mode (socks5h clients handle DNS remotely), or
+                    // 2. Set custom DNS to your VPS IP (if running a DNS server there), or
+                    // 3. Use a fake DNS approach (advanced, requires additional setup)
+                    listOf(
+                        "1.1.1.1",
+                        "8.8.8.8",
+                        "9.9.9.9",
+                        "94.140.14.14"
+                    ).also { VpnManager.appendLog("Using default DNS servers") }
+                }
 
                 val builder = Builder()
                     .setSession(getString(R.string.app_name))
                     .setMtu(1500)
                     .addAddress("10.0.0.2", 32)
                     .addRoute("0.0.0.0", 0)
-                    .addDnsServer(vpnDnsServer)
+                vpnDnsServers.forEach { builder.addDnsServer(it) }
+                VpnManager.appendLog("VPN DNS servers: ${vpnDnsServers.joinToString()}")
+                
+                // In fake DNS mode, route fake IP range through VPN
+                if (globalSettings.fakeDnsEnabled) {
+                    builder.addRoute("198.18.0.0", 16)
+                    VpnManager.appendLog("Added route for fake DNS range: 198.18.0.0/16")
+                }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                     val splitEnabled = globalSettings.splitTunnelingEnabled &&
@@ -324,6 +386,12 @@ class GooseRelayVpnService : VpnService() {
                 httpProxyJob?.cancel()
                 sharingSocksJob?.cancel()
                 logTailJob?.cancel()
+
+                // Stop fake DNS components
+                fakeDnsInterceptor?.stop()
+                fakeDnsServer?.stop()
+                fakeDnsInterceptor = null
+                fakeDnsServer = null
 
                 // Close sharing servers
                 runCatching { sharingSocksServer?.close() }
