@@ -10,6 +10,8 @@ data class ProfileEntity(
     val debugTiming: Boolean = false,
     val socksHost: String = "127.0.0.1",
     val socksPort: Int = 1080,
+    val socksUser: String = "",
+    val socksPass: String = "",
     val googleHost: String = "216.239.38.120",
     val sniJson: String = "[]",
     val scriptKeysText: String = "",

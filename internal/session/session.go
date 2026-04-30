@@ -25,6 +25,20 @@ const TxBufHighWater = 8 * 1024 * 1024
 // down over time as it iterates more and more dead sessions.
 const sessionFinalTimeout = 30 * time.Second
 
+// rxInboxCap bounds how many in-flight frames can be queued from poll workers
+// to the per-session rxLoop. Sized so a multi-user client absorbing a full
+// busy-mode batch (144 frames) for one session across two simultaneous
+// responses cannot overflow during a brief consumer pause. With 256KB max
+// payload this is at most rxInboxCap × 256KB worth of pointers (the payloads
+// themselves are zero-copy slices into the response body, GC'd as drained).
+const rxInboxCap = 1024
+
+// rxInboxBlockTimeout is how long ProcessRx waits for rxInbox to drain when
+// it is full before killing the session. Real consumer stalls are typically
+// sub-second (GC pause, syscall blocked, page fault); only true deadlocks
+// last longer, and those should drop the session.
+const rxInboxBlockTimeout = 5 * time.Second
+
 // Session is one logical TCP connection across the relay.
 type Session struct {
 	ID     [frame.SessionIDLen]byte
@@ -68,7 +82,7 @@ func New(id [frame.SessionIDLen]byte, target string, needsSYN bool) *Session {
 		rxQueue:   make(map[uint64]*frame.Frame),
 		RxChan:    make(chan []byte, 1024),
 		synNeeded: needsSYN,
-		rxInbox:   make(chan *frame.Frame, 64),
+		rxInbox:   make(chan *frame.Frame, rxInboxCap),
 		rxDone:    make(chan struct{}),
 	}
 	s.txCond = sync.NewCond(&s.mu)
@@ -86,6 +100,17 @@ func (s *Session) Stop() {
 // in sequence order. Running it independently from poll workers means a slow
 // SOCKS reader on one session cannot stall frame delivery for any other session.
 func (s *Session) rxLoop() {
+	defer func() {
+		// Guarantee RxChan is closed when rxLoop exits for any reason (rxDone
+		// fired, FIN processed, or session killed via ProcessRx overflow). This
+		// unblocks any goroutine ranging over RxChan without a separate close call.
+		s.mu.Lock()
+		if !s.rxClosed {
+			s.rxClosed = true
+			close(s.RxChan)
+		}
+		s.mu.Unlock()
+	}()
 	for {
 		select {
 		case f := <-s.rxInbox:
@@ -286,9 +311,13 @@ func (s *Session) drainTx(maxPayload, maxFrames int) []*frame.Frame {
 	return frames
 }
 
-// ProcessRx enqueues f to the per-session rxLoop goroutine and returns
-// immediately. Callers (poll workers) are never blocked by a slow SOCKS reader
-// on this session, and cannot stall delivery to other sessions as a result.
+// ProcessRx enqueues f to the per-session rxLoop goroutine. The fast path is
+// non-blocking. If rxInbox is saturated (slow SOCKS consumer or large burst),
+// we wait up to rxInboxBlockTimeout to absorb the transient backpressure
+// before declaring the session dead and killing it. Blocking briefly is far
+// preferable to nuking an entire connection over a few-millisecond consumer
+// stall — the original kill-on-overflow behavior caused mid-stream session
+// drops under multi-user fan-out and brief GC pauses.
 func (s *Session) ProcessRx(f *frame.Frame) {
 	s.mu.Lock()
 	if s.rxClosed {
@@ -296,9 +325,24 @@ func (s *Session) ProcessRx(f *frame.Frame) {
 		return
 	}
 	s.mu.Unlock()
+	// Fast path: enqueue without blocking when there is room.
+	select {
+	case s.rxInbox <- f:
+		return
+	case <-s.rxDone:
+		return
+	default:
+	}
+	// Slow path: rxInbox is full. Block briefly so transient consumer pauses
+	// (GC, syscall, page fault) don't tear down the session. Only kill on a
+	// genuine deadlock that exceeds rxInboxBlockTimeout.
+	t := time.NewTimer(rxInboxBlockTimeout)
+	defer t.Stop()
 	select {
 	case s.rxInbox <- f:
 	case <-s.rxDone:
+	case <-t.C:
+		s.Stop()
 	}
 }
 
@@ -343,11 +387,20 @@ func (s *Session) deliverRx(f *frame.Frame) bool {
 	s.mu.Unlock()
 
 	for _, p := range toSend {
-		s.RxChan <- p
+		select {
+		case s.RxChan <- p:
+		case <-s.rxDone:
+			// Session was killed (e.g. rxInbox overflow). If a FIN was already
+			// decoded, close RxChan now; otherwise rxLoop's defer handles it.
+			if closeAfter {
+				close(s.RxChan)
+			}
+			return true
+		}
 	}
 	if closeAfter {
 		close(s.RxChan)
-		s.Stop() // unblocks any concurrent ProcessRx call waiting on rxInbox
+		s.Stop()
 	}
 	return closeAfter
 }

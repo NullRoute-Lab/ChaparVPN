@@ -174,6 +174,8 @@ private fun ProfileEditorDialog(
     var debugTiming by remember { mutableStateOf(profile?.debugTiming ?: false) }
     var socksHost by remember { mutableStateOf(profile?.socksHost ?: "127.0.0.1") }
     var socksPort by remember { mutableStateOf((profile?.socksPort ?: 1080).toString()) }
+    var socksUser by remember { mutableStateOf(profile?.socksUser ?: "") }
+    var socksPass by remember { mutableStateOf(profile?.socksPass ?: "") }
     var googleHost by remember { mutableStateOf(profile?.googleHost ?: "216.239.38.120") }
     var sniCsv by remember { mutableStateOf(profile?.sniJson?.replace("[", "")?.replace("]", "")?.replace("\"", "") ?: "") }
     var scriptKeysText by remember { mutableStateOf(profile?.scriptKeysText ?: "") }
@@ -189,6 +191,13 @@ private fun ProfileEditorDialog(
             debugTiming = root.get("debug_timing")?.asBoolean ?: debugTiming
             socksHost = root.get("socks_host")?.asString ?: socksHost
             socksPort = root.get("socks_port")?.asInt?.toString() ?: socksPort
+            socksUser = root.get("socks_user")?.asString ?: socksUser
+            socksPass = root.get("socks_pass")?.asString ?: socksPass
+            if ((socksUser.isBlank()) != (socksPass.isBlank())) {
+                validationError = "Import rejected: socks_user and socks_pass must both be set or both be empty (SOCKS5 auth requires both values)."
+                return@runCatching
+            }
+            validationError = null
             googleHost = root.get("google_host")?.asString ?: googleHost
             sniCsv = when {
                 root.get("sni")?.isJsonArray == true -> root.getAsJsonArray("sni")?.mapNotNull { it.asString }?.joinToString(", ") ?: ""
@@ -211,6 +220,8 @@ private fun ProfileEditorDialog(
             debugTiming = debugTiming,
             socksHost = socksHost,
             socksPort = socksPort.toIntOrNull()?.coerceIn(1, 65535) ?: 1080,
+            socksUser = socksUser,
+            socksPass = socksPass,
             googleHost = googleHost,
             sniJson = if (sniCsv.isBlank()) "[]" else sniCsv.split(",").map { it.trim() }.filter { it.isNotBlank() }
                 .joinToString(prefix = "[\"", postfix = "\"]", separator = "\",\""),
@@ -229,6 +240,7 @@ private fun ProfileEditorDialog(
                 validationError = when {
                     scriptKeysText.isBlank() -> "Script keys are required"
                     tunnelKey.isBlank() -> "Tunnel key is required"
+                    (socksUser.isBlank()) != (socksPass.isBlank()) -> "socks_user and socks_pass must both be set or both be empty"
                     else -> null
                 }
                 if (validationError != null) return@Button
@@ -241,6 +253,8 @@ private fun ProfileEditorDialog(
                         debugTiming = debugTiming,
                         socksHost = socksHost,
                         socksPort = socksPort.toIntOrNull()?.coerceIn(1, 65535) ?: 1080,
+                        socksUser = socksUser,
+                        socksPass = socksPass,
                         googleHost = googleHost,
                         sniJson = sniJson,
                         scriptKeysText = scriptKeysText,
@@ -269,6 +283,8 @@ private fun ProfileEditorDialog(
                 }
                 OutlinedTextField(value = socksHost, onValueChange = { socksHost = it }, label = { Text("socks_host") })
                 OutlinedTextField(value = socksPort, onValueChange = { socksPort = it.filter(Char::isDigit) }, label = { Text("socks_port") })
+                OutlinedTextField(value = socksUser, onValueChange = { socksUser = it }, label = { Text("socks_user") })
+                OutlinedTextField(value = socksPass, onValueChange = { socksPass = it }, label = { Text("socks_pass") })
                 OutlinedTextField(value = googleHost, onValueChange = { googleHost = it }, label = { Text("google_host") })
                 OutlinedTextField(value = sniCsv, onValueChange = { sniCsv = it }, label = { Text("sni (comma separated)") })
                 OutlinedTextField(value = scriptKeysText, onValueChange = { scriptKeysText = it }, label = { Text("script_keys (one per line)") }, minLines = 3)

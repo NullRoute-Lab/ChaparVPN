@@ -14,6 +14,8 @@ object ConfigGenerator {
             addProperty("debug_timing", profile.debugTiming)
             addProperty("socks_host", profile.socksHost)
             addProperty("socks_port", profile.socksPort)
+            addProperty("socks_user", profile.socksUser)
+            addProperty("socks_pass", profile.socksPass)
             addProperty("google_host", profile.googleHost)
             add("sni", parseSni(profile.sniJson))
             add("script_keys", parseScriptKeys(profile.scriptKeysText))

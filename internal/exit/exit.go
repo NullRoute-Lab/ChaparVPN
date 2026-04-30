@@ -18,6 +18,7 @@ import (
 
 	"github.com/kianmhz/GooseRelayVPN/internal/frame"
 	"github.com/kianmhz/GooseRelayVPN/internal/session"
+	"golang.org/x/net/proxy"
 )
 
 const (
@@ -43,12 +44,23 @@ const (
 	MaxFramePayload = 256 * 1024
 
 	// upstreamReadBuf is the chunk size for reading from real net.Conn before
-	// pushing to session.EnqueueTx (which then chunks into frames).
-	upstreamReadBuf = 128 * 1024
+	// pushing to session.EnqueueTx (which then chunks into frames). Matches
+	// MaxFramePayload so a single TCP read fills exactly one max-sized frame:
+	// halves the frames-per-MB count on bulk downloads vs. 128KB, which cuts
+	// length-prefix and Unmarshal overhead on the receiving carrier.
+	upstreamReadBuf = 256 * 1024
 
 	// coalesceWindow lets us gather a few more frames before responding, which
 	// improves throughput for video streams under higher RTT links.
 	coalesceWindow = 25 * time.Millisecond
+
+	// coalesceWindowBusy is used when many sessions are active concurrently:
+	// under high fan-out the next batch fills within a few ms, so 25ms of
+	// extra accumulation is pure tail latency. Only applied when a) the
+	// session count is above busySessionThreshold and b) the current batch
+	// is not already large (>= maxDrainFramesPerBatch/2) — large batches
+	// are bulk-dominant and benefit more from full coalesce.
+	coalesceWindowBusy = 10 * time.Millisecond
 
 	// coalesceMinFrames is the minimum number of frames in a drain before we
 	// bother waiting coalesceWindow. Batches at or below this threshold are
@@ -89,24 +101,25 @@ const (
 
 // Config is the VPS server's configuration.
 type Config struct {
-	ListenAddr   string // "0.0.0.0:8443"
-	AESKeyHex    string // 64-char hex
-	DebugTiming  bool   // when true, log per-session dial breakdown and first-read latency
+	ListenAddr    string // "0.0.0.0:8443"
+	AESKeyHex     string // 64-char hex
+	DebugTiming   bool   // when true, log per-session dial breakdown and first-read latency
+	UpstreamProxy string // optional "host:port" of a local SOCKS5 proxy (e.g. WARP on 127.0.0.1:40000)
 }
 
 // Server holds the per-process session state.
 type Server struct {
-	cfg          Config
-	aead         *frame.Crypto
-	dial         func(network, address string, timeout time.Duration) (net.Conn, error)
-	dns          *dnsCache
-	debugTiming  bool
+	cfg         Config
+	aead        *frame.Crypto
+	dial        func(network, address string, timeout time.Duration) (net.Conn, error)
+	dns         *dnsCache
+	debugTiming bool
 
 	mu           sync.Mutex
 	sessions     map[[frame.SessionIDLen]byte]*session.Session
-	txReady      map[[frame.SessionIDLen]byte]struct{} // sessions with pending TX frames
-	firstReply   map[[frame.SessionIDLen]byte]struct{} // sessions whose first downstream batch hasn't been sent yet
-	upstreams    map[[frame.SessionIDLen]byte]net.Conn // upstream conn per session, kept so GC can force-close
+	txReady      map[[frame.SessionIDLen]byte]struct{}  // sessions with pending TX frames
+	firstReply   map[[frame.SessionIDLen]byte]struct{}  // sessions whose first downstream batch hasn't been sent yet
+	upstreams    map[[frame.SessionIDLen]byte]net.Conn  // upstream conn per session, kept so GC can force-close
 	lastActivity map[[frame.SessionIDLen]byte]time.Time // last time the client sent a frame for this session
 	dialFail     map[string]time.Time
 	pendingRSTs  []*frame.Frame // RST frames to send back on the next response
@@ -136,10 +149,11 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	dialFn := dialFunc(cfg.UpstreamProxy)
 	return &Server{
 		cfg:          cfg,
 		aead:         aead,
-		dial:         net.DialTimeout,
+		dial:         dialFn,
 		dns:          newDNSCache(),
 		debugTiming:  cfg.DebugTiming,
 		sessions:     make(map[[frame.SessionIDLen]byte]*session.Session),
@@ -150,6 +164,33 @@ func New(cfg Config) (*Server, error) {
 		dialFail:     make(map[string]time.Time),
 		activity:     make(chan struct{}, 1),
 	}, nil
+}
+
+// dialFunc returns a dial function. When proxyAddr is non-empty it routes all
+// outbound connections through the SOCKS5 proxy at that address; otherwise it
+// falls back to net.DialTimeout.
+func dialFunc(proxyAddr string) func(network, address string, timeout time.Duration) (net.Conn, error) {
+	if proxyAddr == "" {
+		return net.DialTimeout
+	}
+	forward := &net.Dialer{Timeout: 15 * time.Second}
+	d, err := proxy.SOCKS5("tcp", proxyAddr, nil, forward)
+	if err != nil {
+		// proxy.SOCKS5 only errors on bad auth config; with nil auth this never fires.
+		log.Printf("[exit] upstream_proxy: failed to build SOCKS5 dialer: %v — falling back to direct", err)
+		return net.DialTimeout
+	}
+	cd, ok := d.(proxy.ContextDialer)
+	if !ok {
+		return func(_, address string, _ time.Duration) (net.Conn, error) {
+			return d.Dial("tcp", address)
+		}
+	}
+	return func(_, address string, timeout time.Duration) (net.Conn, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		return cd.DialContext(ctx, "tcp", address)
+	}
 }
 
 // ListenAndServe blocks. It binds an HTTP listener on cfg.ListenAddr with one
@@ -228,7 +269,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			// Urgent batches (RSTs, first downstream after SYN) skip coalesce
 			// unconditionally so connection setup is not delayed.
 			if !urgent && len(txFrames) > coalesceMinFrames {
-				coalesceDeadline := time.Now().Add(coalesceWindow)
+				coalesceDeadline := time.Now().Add(s.coalesceDuration(len(txFrames)))
 			coalesceLoop:
 				for {
 					if time.Now().After(coalesceDeadline) {
@@ -284,12 +325,32 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) drainWindow(rxFrames []*frame.Frame) time.Duration {
-	for _, f := range rxFrames {
-		if f.HasFlag(frame.FlagSYN) || len(f.Payload) > 0 {
-			return ActiveDrainWindow
-		}
+	// Any non-empty client batch was a directed action (SYN, data, FIN, RST):
+	// the worker that posted it is blocked waiting for our response and has
+	// nothing else to do until we return. Use the short ActiveDrainWindow so
+	// these workers come back into the pool quickly and back-to-back
+	// connection setup/teardown cycles aren't gated on LongPollWindow (8s).
+	// Only truly empty polls (idle long-polls) keep the long window so the
+	// server can push downstream data without forcing constant repolling.
+	if len(rxFrames) > 0 {
+		return ActiveDrainWindow
 	}
 	return LongPollWindow
+}
+
+// coalesceDuration picks the coalesce window for the current drain. Under
+// high session fan-out we shrink the window: the next batch fills within
+// a few ms anyway, and 25ms of extra accumulation per response just adds
+// tail latency. Large batches (already half-full or more) keep the full
+// 25ms because they are bulk-dominant and benefit from extra throughput.
+func (s *Server) coalesceDuration(currentFrames int) time.Duration {
+	s.mu.Lock()
+	sessionCount := len(s.sessions)
+	s.mu.Unlock()
+	if sessionCount >= busySessionThreshold && currentFrames < maxDrainFramesPerBatch/2 {
+		return coalesceWindowBusy
+	}
+	return coalesceWindow
 }
 
 // routeIncoming routes one incoming frame to its session, creating the session
@@ -343,11 +404,24 @@ func (s *Server) routeIncoming(f *frame.Frame) {
 // openSession dials the upstream target, creates a Session for the given ID,
 // registers it, and spawns the bidirectional pump goroutines.
 func (s *Server) openSession(id [frame.SessionIDLen]byte, target string) (*session.Session, error) {
-	res, err := dialWithDNSCache(s.dns, s.dial, "tcp", target, 15*time.Second)
-	if err != nil {
-		return nil, err
+	var upstream net.Conn
+	var res *dialResult
+	if s.cfg.UpstreamProxy != "" {
+		// Let the SOCKS5 proxy handle DNS so the target hostname is resolved
+		// on the proxy side (e.g. through WARP), not locally on the VPS.
+		conn, err := s.dial("tcp", target, 15*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		upstream = conn
+	} else {
+		var err error
+		res, err = dialWithDNSCache(s.dns, s.dial, "tcp", target, 15*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		upstream = res.Conn
 	}
-	upstream := res.Conn
 	// Disable Nagle's algorithm so small writes (TLS handshake records, HTTP
 	// request lines) hit the wire immediately instead of waiting up to 40 ms
 	// to coalesce. Interactive workloads dominate this tunnel; throughput-bound
@@ -356,8 +430,12 @@ func (s *Server) openSession(id [frame.SessionIDLen]byte, target string) (*sessi
 		_ = tcpConn.SetNoDelay(true)
 	}
 	if s.debugTiming {
-		log.Printf("[timing] %x dial dns=%dms cached=%v tcp=%dms target=%s",
-			id[:4], res.DNS.Milliseconds(), res.DNSCached, res.TCP.Milliseconds(), target)
+		if res != nil {
+			log.Printf("[timing] %x dial dns=%dms cached=%v tcp=%dms target=%s",
+				id[:4], res.DNS.Milliseconds(), res.DNSCached, res.TCP.Milliseconds(), target)
+		} else {
+			log.Printf("[timing] %x dial via proxy target=%s", id[:4], target)
+		}
 	}
 	dialedAt := time.Now()
 	sess := session.New(id, target, false)
@@ -460,6 +538,11 @@ func (s *Server) drainAll() ([]*frame.Frame, bool) {
 				urgent = true
 				delete(s.firstReply, id)
 			}
+			// Outbound traffic also counts as session liveness; without this
+			// a long pure-download session (large file, video stream) with no
+			// client→server frames would be force-closed by the idle GC after
+			// idleSessionTimeout even though it is actively delivering data.
+			s.lastActivity[id] = time.Now()
 		}
 		out = append(out, frames...)
 		remaining -= len(frames)

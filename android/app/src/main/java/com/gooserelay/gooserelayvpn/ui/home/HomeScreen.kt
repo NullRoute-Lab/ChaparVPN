@@ -83,9 +83,9 @@ fun HomeScreen(
 
     val proxyHost = selectedProfile?.socksHost ?: "127.0.0.1"
     val proxyPort = selectedProfile?.socksPort ?: 1080
-    val socksAuthEnabled = false
-    val socksUser = ""
-    val socksPass = ""
+    val socksUser = selectedProfile?.socksUser.orEmpty()
+    val socksPass = selectedProfile?.socksPass.orEmpty()
+    val socksAuthEnabled = socksUser.isNotBlank() && socksPass.isNotBlank()
 
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
