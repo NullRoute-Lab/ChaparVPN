@@ -47,6 +47,8 @@ type Bridge struct {
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	protectFn  func(fd int) bool
+	udpDropLogNextNs atomic.Int64
+	udpDropCount     atomic.Uint64
 }
 
 // DNSMapper handles fake DNS mapping
@@ -236,10 +238,19 @@ func (b *Bridge) handleUDP(packet []byte, srcIP, dstIP net.IP) {
 		b.handleDNS(packet, srcIP, srcPort)
 		return
 	}
-	
-	// Other UDP traffic - not supported yet
-	log.Printf("[TUN-BRIDGE] UDP packet: %s:%d -> %s:%d (not DNS, dropping)", 
-		srcIP, srcPort, dstIP, dstPort)
+
+	// Other UDP traffic: actively reject to speed up app fallback to TCP.
+	b.sendICMPPortUnreachable(packet, srcIP, dstIP)
+
+	// Rate-limit noisy logs while still exposing signal.
+	b.udpDropCount.Add(1)
+	nowNs := time.Now().UnixNano()
+	nextNs := b.udpDropLogNextNs.Load()
+	if nowNs >= nextNs && b.udpDropLogNextNs.CompareAndSwap(nextNs, nowNs+int64(2*time.Second)) {
+		count := b.udpDropCount.Swap(0)
+		log.Printf("[TUN-BRIDGE] Dropped non-DNS UDP packets: %d (latest %s:%d -> %s:%d)",
+			count, srcIP, srcPort, dstIP, dstPort)
+	}
 }
 
 // handleDNS handles DNS queries
@@ -397,6 +408,49 @@ func (b *Bridge) sendDNSResponse(originalPacket []byte, srcIP net.IP, srcPort ui
 	copy(packet[28:], dnsResponse)
 	
 	// Write to TUN
+	b.writeTUN(packet)
+}
+
+// sendICMPPortUnreachable sends ICMP destination unreachable (port unreachable).
+func (b *Bridge) sendICMPPortUnreachable(originalPacket []byte, srcIP, dstIP net.IP) {
+	if len(originalPacket) < 28 {
+		return
+	}
+
+	quotedLen := 28
+	if len(originalPacket) < quotedLen {
+		quotedLen = len(originalPacket)
+	}
+
+	icmpLen := 8 + quotedLen
+	ipLen := 20 + icmpLen
+	packet := make([]byte, ipLen)
+
+	// Outer IPv4 header.
+	packet[0] = 0x45
+	packet[1] = 0x00
+	binary.BigEndian.PutUint16(packet[2:4], uint16(ipLen))
+	binary.BigEndian.PutUint16(packet[4:6], 0)
+	binary.BigEndian.PutUint16(packet[6:8], 0)
+	packet[8] = 64
+	packet[9] = 1 // ICMP
+	copy(packet[12:16], dstIP.To4()) // reply source = original destination
+	copy(packet[16:20], srcIP.To4()) // reply destination = original source
+	binary.BigEndian.PutUint16(packet[10:12], b.calculateChecksum(packet[:20]))
+
+	// ICMP header + quoted packet.
+	icmpStart := 20
+	packet[icmpStart] = 3     // Destination Unreachable
+	packet[icmpStart+1] = 3   // Port Unreachable
+	packet[icmpStart+2] = 0   // checksum hi
+	packet[icmpStart+3] = 0   // checksum lo
+	packet[icmpStart+4] = 0   // unused
+	packet[icmpStart+5] = 0   // unused
+	packet[icmpStart+6] = 0   // unused
+	packet[icmpStart+7] = 0   // unused
+	copy(packet[icmpStart+8:], originalPacket[:quotedLen])
+	binary.BigEndian.PutUint16(packet[icmpStart+2:icmpStart+4], b.calculateChecksum(packet[icmpStart:]))
+
 	b.writeTUN(packet)
 }
 
