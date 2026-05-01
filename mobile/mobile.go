@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/kianmhz/GooseRelayVPN/mobile/tun"
 	"github.com/kianmhz/GooseRelayVPN/internal/carrier"
 	"github.com/kianmhz/GooseRelayVPN/internal/config"
 	"github.com/kianmhz/GooseRelayVPN/internal/session"
@@ -164,6 +165,43 @@ func StopTun() {
 		engine.Stop()
 		tunActive = false
 	}
+}
+
+// TUN Bridge functions (wrapper for mobile/tun package)
+
+// StartTunBridge starts the TUN bridge with DNS interception
+func StartTunBridge(tunFd int64, mtu int64, socksAddr string) error {
+	return tun.StartTunBridge(int32(tunFd), int32(mtu), socksAddr)
+}
+
+// StopTunBridge stops the TUN bridge
+func StopTunBridge() {
+	tun.StopTunBridge()
+}
+
+// IsTunBridgeRunning returns true if bridge is active
+func IsTunBridgeRunning() bool {
+	return tun.IsTunBridgeRunning()
+}
+
+// GetTunBandwidth returns upload and download bytes
+func GetTunBandwidth() (up int64, down int64) {
+	return tun.GetTunBandwidth()
+}
+
+// GetDNSMapping returns the hostname for a fake IP
+func GetDNSMapping(fakeIP string) string {
+	return tun.GetDNSMapping(fakeIP)
+}
+
+// GetDNSMappingCount returns the number of DNS mappings
+func GetDNSMappingCount() int {
+	return tun.GetDNSMappingCount()
+}
+
+// GetTunVersion returns the TUN module version
+func GetTunVersion() string {
+	return tun.GetVersion()
 }
 
 type noopResolver struct{}
