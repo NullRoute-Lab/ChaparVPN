@@ -300,7 +300,7 @@ private fun ProfileEditorDialog(
     showErrorDialog?.let { error ->
         AlertDialog(
             onDismissRequest = { showErrorDialog = null },
-            confirmButton = { TextButton(onClick = { showErrorDialog = null }) { Text("OK") },
+            confirmButton = { TextButton(onClick = { showErrorDialog = null }) { Text("OK") } },
             title = { Text("Error") },
             text = { Text(error) }
         )
