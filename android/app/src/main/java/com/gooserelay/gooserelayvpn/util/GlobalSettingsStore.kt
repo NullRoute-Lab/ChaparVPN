@@ -1,6 +1,7 @@
 package com.gooserelay.gooserelayvpn.util
 
 import android.content.Context
+import android.util.Log
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -25,6 +26,7 @@ data class GlobalSettings(
 )
 
 object GlobalSettingsStore {
+    private const val TAG = "GlobalSettingsStore"
     private val Context.dataStore by preferencesDataStore(name = "global_settings")
 
     private val KEY_CONNECTION_MODE = stringPreferencesKey("connection_mode")
@@ -46,10 +48,13 @@ object GlobalSettingsStore {
     }
 
     suspend fun load(context: Context): GlobalSettings {
-        return context.dataStore.data.first().toModel()
+        return context.dataStore.data.first().toModel().also { settings ->
+            Log.d(TAG, "Loaded settings: connectionMode=${settings.connectionMode}, customDnsServers=${settings.customDnsServers}, fakeDnsEnabled=${settings.fakeDnsEnabled}")
+        }
     }
 
     suspend fun save(context: Context, settings: GlobalSettings) {
+        Log.d(TAG, "Saving settings: connectionMode=${settings.connectionMode}, customDnsServers=${settings.customDnsServers}, fakeDnsEnabled=${settings.fakeDnsEnabled}")
         context.dataStore.edit { prefs ->
             prefs[KEY_CONNECTION_MODE] = settings.connectionMode
             prefs[KEY_ALLOW_LAN] = settings.allowLan
@@ -63,6 +68,7 @@ object GlobalSettingsStore {
             prefs[KEY_INTERNET_SHARING_USER] = settings.internetSharingUser
             prefs[KEY_INTERNET_SHARING_PASS] = settings.internetSharingPass
         }
+        Log.d(TAG, "Settings saved successfully")
     }
 
     private fun Preferences.toModel(): GlobalSettings {

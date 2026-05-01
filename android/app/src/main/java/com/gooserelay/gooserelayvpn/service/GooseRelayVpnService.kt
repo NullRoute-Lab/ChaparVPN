@@ -134,6 +134,7 @@ class GooseRelayVpnService : VpnService() {
                 val proxyMode = globalSettings.connectionMode.equals("PROXY", ignoreCase = true)
 
                 VpnManager.appendLog("Loading profile: ${profile.name}")
+                VpnManager.appendLog("Global Settings Loaded - connectionMode: ${globalSettings.connectionMode}, customDnsServers: '${globalSettings.customDnsServers}', fakeDnsEnabled: ${globalSettings.fakeDnsEnabled}")
 
                 // Check if Go core is still running from previous session
                 ensureGoCoreStopped()
