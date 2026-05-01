@@ -3,8 +3,6 @@ package com.gooserelay.gooserelayvpn.service
 import android.app.Notification
 import android.app.PendingIntent
 import android.content.Intent
-import com.gooserelay.gooserelayvpn.dns.FakeDnsServer
-import com.gooserelay.gooserelayvpn.dns.FakeDnsInterceptor
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -83,10 +81,9 @@ class GooseRelayVpnService : VpnService() {
     private var sharingHttpServer: java.net.ServerSocket? = null
     private var logTailJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
-    @Volatile
-    private var fakeDnsServer: FakeDnsServer? = null
-    private var fakeDnsInterceptor: FakeDnsInterceptor? = null
     private var isStopping = false
+    @Volatile
+    private var tunBridgeActive = false
     @Volatile
     private var socksAuthWarningShown = false
     @Volatile
@@ -209,29 +206,6 @@ class GooseRelayVpnService : VpnService() {
                     return@launch
                 }
 
-                // Fake DNS mode: intercept DNS packets and return fake IPs
-                if (globalSettings.fakeDnsEnabled) {
-                    VpnManager.appendLog("Fake DNS mode enabled")
-                    
-                    // Start fake DNS server on TUN interface
-                    fakeDnsServer = FakeDnsServer(53)
-                    fakeDnsServer?.start()
-                    VpnManager.appendLog("Fake DNS server started on 0.0.0.0:53")
-                    
-                    // Start interceptor proxy that translates fake IPs to real hostnames
-                    fakeDnsInterceptor = FakeDnsInterceptor(
-                        listenPort = 10800,
-                        upstreamHost = "127.0.0.1",
-                        upstreamPort = socksPort,
-                        fakeDnsServer = fakeDnsServer!!
-                    )
-                    fakeDnsInterceptor?.start()
-                    VpnManager.appendLog("Fake DNS interceptor started on port 10800")
-                    
-                    // Wait a bit for servers to start
-                    delay(500)
-                }
-
                 // DNS configuration: use custom DNS servers if provided, otherwise use defaults.
                 // For remote DNS resolution (to bypass filtered DNS in Iran), configure custom
                 // DNS servers that are accessible through the VPN tunnel (e.g., your VPS IP or
@@ -245,9 +219,9 @@ class GooseRelayVpnService : VpnService() {
                             VpnManager.appendLog("Using custom DNS servers: ${servers.joinToString()}")
                         }
                 } else if (globalSettings.fakeDnsEnabled) {
-                    // In fake DNS mode, point to our fake DNS server
-                    listOf("10.0.0.1").also {
-                        VpnManager.appendLog("Using fake DNS server: 10.0.0.1")
+                    // In fake DNS mode, point to TUN bridge DNS
+                    listOf("172.19.0.2").also {
+                        VpnManager.appendLog("Using Go TUN bridge DNS: 172.19.0.2")
                     }
                 } else {
                     // Default: multiple public resolvers to reduce startup stalls on filtered networks.
@@ -269,7 +243,13 @@ class GooseRelayVpnService : VpnService() {
                     .setMtu(1500)
                     .setBlocking(false)
                     .setUnderlyingNetworks(null)
-                    .addAddress("10.0.0.2", 32)
+                
+                if (globalSettings.fakeDnsEnabled) {
+                    builder.addAddress("172.19.0.1", 30)
+                } else {
+                    builder.addAddress("10.0.0.2", 32)
+                }
+                
                     .addRoute("0.0.0.0", 0)
                 vpnDnsServers.forEach { builder.addDnsServer(it) }
                 VpnManager.appendLog("VPN DNS servers: ${vpnDnsServers.joinToString()}")
@@ -331,9 +311,30 @@ class GooseRelayVpnService : VpnService() {
 
                 VpnManager.appendLog("TUN interface established (fd=${vpnInterface!!.fd})")
 
-                // Start Go-based tun2socks bridge
-                VpnManager.appendLog("Starting tun2socks bridge: TUN fd -> socks5://127.0.0.1:$socksPort")
-                mobile.Mobile.startTun(vpnInterface!!.fd.toLong(), "127.0.0.1:$socksPort")
+                // Start TUN bridge (either Go TUN with DNS interception or standard tun2socks)
+                if (globalSettings.fakeDnsEnabled) {
+                    try {
+                        VpnManager.appendLog("Starting Go TUN bridge with DNS interception...")
+                        
+                        // Use reflection to call TUN module (separate from main Go code)
+                        val tunClass = Class.forName("tun.Tun")
+                        val startMethod = tunClass.getMethod("startTunBridge", Long::class.java, Long::class.java, String::class.java)
+                        
+                        // Start TUN bridge: fd, mtu, socksAddr
+                        startMethod.invoke(null, vpnInterface!!.fd.toLong(), 1500L, "127.0.0.1:$socksPort")
+                        
+                        tunBridgeActive = true
+                        VpnManager.appendLog("Go TUN bridge started (DNS will be resolved remotely)")
+                    } catch (e: Exception) {
+                        VpnManager.appendLog("Failed to start Go TUN bridge: ${e.message}")
+                        Log.e(TAG, "TUN bridge error", e)
+                        throw e
+                    }
+                } else {
+                    // Standard tun2socks bridge without DNS interception
+                    VpnManager.appendLog("Starting tun2socks bridge: TUN fd -> socks5://127.0.0.1:$socksPort")
+                    mobile.Mobile.startTun(vpnInterface!!.fd.toLong(), "127.0.0.1:$socksPort")
+                }
 
                 // Update state
                 VpnManager.updateState(VpnManager.VpnState.CONNECTED)
@@ -368,6 +369,19 @@ class GooseRelayVpnService : VpnService() {
                 connectJob?.cancel()
                 VpnManager.appendLog("Stopping VPN...")
 
+                // Stop Go TUN bridge if active
+                if (tunBridgeActive) {
+                    try {
+                        val tunClass = Class.forName("tun.Tun")
+                        val stopMethod = tunClass.getMethod("stopTunBridge")
+                        stopMethod.invoke(null)
+                        VpnManager.appendLog("Go TUN bridge stopped")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error stopping TUN bridge", e)
+                    }
+                    tunBridgeActive = false
+                }
+
                 // Stop Go client and Tun bridge
                 runCatching {
                     if (mobile.Mobile.isRunning()) {
@@ -388,12 +402,6 @@ class GooseRelayVpnService : VpnService() {
                 httpProxyJob?.cancel()
                 sharingSocksJob?.cancel()
                 logTailJob?.cancel()
-
-                // Stop fake DNS components
-                fakeDnsInterceptor?.stop()
-                fakeDnsServer?.stop()
-                fakeDnsInterceptor = null
-                fakeDnsServer = null
 
                 // Close sharing servers
                 runCatching { sharingSocksServer?.close() }

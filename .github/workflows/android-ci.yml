@@ -48,3 +48,8 @@ jobs:
           name: gooserelayvpn-aar
           path: android/app/libs/gooserelayvpn.aar
 
+      - name: Upload TUN AAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tun-aar
+          path: android/app/libs/tun.aar
