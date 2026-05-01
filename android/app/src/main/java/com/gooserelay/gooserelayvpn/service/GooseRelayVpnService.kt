@@ -316,8 +316,8 @@ class GooseRelayVpnService : VpnService() {
                     try {
                         VpnManager.appendLog("Starting Go TUN bridge with DNS interception...")
                         
-                        // Use reflection to call TUN module (separate from main Go code)
-                        val tunClass = Class.forName("tun.Tun")
+                        // TUN module is included in mobile package
+                        val tunClass = Class.forName("mobile.Mobile")
                         val startMethod = tunClass.getMethod("startTunBridge", Long::class.java, Long::class.java, String::class.java)
                         
                         // Start TUN bridge: fd, mtu, socksAddr
@@ -372,7 +372,7 @@ class GooseRelayVpnService : VpnService() {
                 // Stop Go TUN bridge if active
                 if (tunBridgeActive) {
                     try {
-                        val tunClass = Class.forName("tun.Tun")
+                        val tunClass = Class.forName("mobile.Mobile")
                         val stopMethod = tunClass.getMethod("stopTunBridge")
                         stopMethod.invoke(null)
                         VpnManager.appendLog("Go TUN bridge stopped")

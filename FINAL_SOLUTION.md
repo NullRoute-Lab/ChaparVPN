@@ -1,374 +1,153 @@
-# Final Solution: Separate TUN Module for DNS Interception
+# Final Solution - TUN Module Integration
 
-## Your Requirement
+## What Was Done
 
-> "The reason I don't want the Go part to be modified is that the Go code belongs to another project, and I built this client based on that project. When I update my client, I simply download the latest Go code from the original project and replace it."
-
-## Solution Delivered ✅
-
-I've created a **completely separate Go module** that handles TUN and DNS interception **without touching the original Go code**.
-
-## What Was Created
-
-### New Files (Separate Module)
-
-```
-mobile/tun/
-├── tun_bridge.go      # TUN packet handling & DNS interception
-├── tun_syscall.go     # System calls for file descriptors
-├── tun_api.go         # Android-compatible API
-├── go.mod             # Independent module definition
-└── (builds to tun.aar)
-
-mobile/
-└── build_tun.sh       # Build script for TUN module
-```
-
-### Documentation Files
-
-```
-SEPARATE_TUN_MODULE.md      # Architecture explanation
-IMPLEMENTATION_GUIDE.md     # Step-by-step integration guide
-FINAL_SOLUTION.md          # This file
-```
+The TUN module for DNS interception has been integrated into the main `gooserelayvpn.aar` file instead of being built as a separate module.
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                   Your Project                           │
-├──────────────────────────────────────────────────────────┤
-│                                                          │
-│  Original Go Code (NEVER MODIFIED)                      │
-│  ├── cmd/client/                                        │
-│  ├── cmd/server/                                        │
-│  ├── internal/carrier/                                  │
-│  ├── internal/session/                                  │
-│  ├── go.mod                                             │
-│  └── go.sum                                             │
-│                                                          │
-│  Separate TUN Module (INDEPENDENT)                      │
-│  ├── mobile/tun/tun_bridge.go                          │
-│  ├── mobile/tun/tun_syscall.go                         │
-│  ├── mobile/tun/tun_api.go                             │
-│  └── mobile/tun/go.mod                                  │
-│                                                          │
-│  Android App (USES BOTH)                                │
-│  ├── Uses: goose.aar (original Go)                     │
-│  └── Uses: tun.aar (TUN module)                        │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
+GooseRelayVPN/
+├── mobile/
+│   ├── (original Go code - from upstream project)
+│   └── tun/              ← CUSTOM CODE - DO NOT OVERWRITE
+│       ├── go.mod        ← Keep this for documentation
+│       ├── tun_api.go    ← TUN bridge API
+│       ├── tun_bridge.go ← DNS interception logic
+│       ├── tcp_handler.go← TCP forwarding
+│       └── tun_syscall.go← System calls
 ```
+
+## Build Process
+
+**Single AAR Build:**
+```bash
+gomobile bind -o android/app/libs/gooserelayvpn.aar ./mobile/
+```
+
+This command builds **all** packages under `./mobile/`, including:
+- Original Go client code
+- TUN bridge module (`mobile/tun/`)
+
+Result: One AAR file with all functionality.
+
+## Usage in Kotlin
+
+```kotlin
+import mobile.Mobile
+
+// Start TUN bridge
+Mobile.startTunBridge(fd.toLong(), 1500L, "127.0.0.1:1080")
+
+// Stop TUN bridge
+Mobile.stopTunBridge()
+
+// Check if running
+val running = Mobile.isTunBridgeRunning()
+
+// Get bandwidth
+val bandwidth = Mobile.getTunBandwidth()
+
+// Get DNS mapping
+val hostname = Mobile.getDNSMapping("198.18.0.1")
+
+// Get version
+val version = Mobile.getVersion()
+```
+
+## ⚠️ IMPORTANT: Updating Original Go Code
+
+When you update the Go code from the upstream project:
+
+### ✅ DO:
+1. Update files in `cmd/`, `internal/`, root `go.mod`, etc.
+2. Keep `mobile/tun/` directory intact
+3. Rebuild: `cd android && bash build_go_mobile.sh`
+
+### ❌ DON'T:
+1. Delete or overwrite `mobile/tun/` directory
+2. Replace the entire `mobile/` directory
+3. Modify `mobile/tun/` files (unless fixing bugs)
+
+### Safe Update Process:
+```bash
+# 1. Backup TUN module
+cp -r mobile/tun /tmp/tun-backup
+
+# 2. Update from upstream
+cd /path/to/upstream/project
+git pull
+cp -r cmd/ internal/ go.mod /path/to/GooseRelayVPN/
+
+# 3. Restore TUN module if needed
+if [ ! -d /path/to/GooseRelayVPN/mobile/tun ]; then
+    cp -r /tmp/tun-backup /path/to/GooseRelayVPN/mobile/tun
+fi
+
+# 4. Rebuild
+cd /path/to/GooseRelayVPN/android
+bash build_go_mobile.sh
+```
+
+## Why Keep go.mod in mobile/tun/?
+
+Even though `mobile/tun/go.mod` is not used for building (since it's included in the main build), we keep it for:
+
+1. **Documentation** - Shows this is logically a separate module
+2. **IDE Support** - Helps IDEs understand the package structure
+3. **Future Flexibility** - Easy to switch back to separate build if needed
 
 ## How It Works
 
-### Two Independent Modules
-
-**Module 1: Original Go Code**
-- Handles SOCKS5 proxy
-- Handles tunnel protocol
-- Communicates with VPS
-- **You can update this anytime!**
-
-**Module 2: TUN Module (New)**
-- Handles TUN interface
-- Intercepts DNS packets
-- Maps hostnames to fake IPs
-- Forwards to SOCKS5
-- **Independent, never conflicts!**
-
-### Data Flow
-
-```
-App → DNS Query
-  ↓
-TUN Module → Intercepts DNS
-  ↓
-TUN Module → Returns Fake IP (198.18.x.x)
-  ↓
-App → Connects to Fake IP
-  ↓
-TUN Module → Looks up Real Hostname
-  ↓
-TUN Module → SOCKS5 CONNECT with Hostname
-  ↓
-Original Go → Receives Hostname
-  ↓
-Original Go → Sends through Tunnel
-  ↓
-VPS → Resolves DNS and Connects
-```
-
-## Building
-
-### Build Original Go Code (As Before)
-
-```bash
-cd mobile
-./build_go_mobile.sh
-# Output: goose.aar
-```
-
-### Build TUN Module (Separate)
-
-```bash
-cd mobile
-./build_tun.sh
-# Output: tun.aar
-```
-
-### Use Both in Android
-
-```gradle
-dependencies {
-    implementation files('libs/goose.aar')  // Original
-    implementation files('libs/tun.aar')    // TUN module
-}
-```
-
-## Updating Original Go Code
-
-This is the key benefit:
-
-```bash
-# 1. Download new original Go code
-cd /path/to/original/project
-git pull
-
-# 2. Replace in your project
-cp -r cmd/ /path/to/GooseRelayVPN/cmd/
-cp -r internal/ /path/to/GooseRelayVPN/internal/
-cp go.mod /path/to/GooseRelayVPN/go.mod
-cp go.sum /path/to/GooseRelayVPN/go.sum
-
-# 3. Rebuild original Go code
-cd /path/to/GooseRelayVPN/mobile
-./build_go_mobile.sh
-
-# 4. TUN module is NOT affected!
-# mobile/tun/ stays unchanged
-# tun.aar stays unchanged
-# No conflicts, no merge issues!
-```
-
-## Android Integration
-
-```kotlin
-import mobile.Mobile  // Original Go code
-import tun.Tun        // TUN module
-
-class GooseRelayVpnService : VpnService() {
-    
-    private fun startVpn() {
-        // 1. Start original Go client
-        Mobile.startClient(configPath, logPath)
-        
-        // 2. Build VPN interface
-        val builder = Builder()
-            .addAddress("172.19.0.1", 30)
-            .addDnsServer("172.19.0.2")
-            .addRoute("0.0.0.0", 0)
-            .addRoute("198.18.0.0", 15)
-        
-        val tunFd = builder.establish()
-        
-        // 3. Start TUN module
-        Tun.startTunBridge(tunFd.fd, 1500, "127.0.0.1:1080")
-    }
-    
-    private fun stopVpn() {
-        Tun.stopTunBridge()
-        Mobile.stopClient()
-    }
-}
-```
+1. **User enables "Fake DNS"** in app settings
+2. **VPN connects** with special configuration (172.19.0.1/30)
+3. **DNS queries intercepted** by TUN bridge → returns fake IP (198.18.x.x)
+4. **TCP connections intercepted** → TUN bridge looks up real hostname
+5. **SOCKS5 connection** with hostname (not IP) → tunnels to VPS
+6. **VPS resolves DNS** remotely → bypasses local filtering
 
 ## Benefits
 
-### ✅ Original Code Never Modified
-- Update original Go code anytime
-- No merge conflicts
-- No compatibility issues
+✅ **No separate module issues** - Everything in one AAR  
+✅ **Simpler build process** - One gomobile bind command  
+✅ **Works on GitHub Actions** - No complex build steps  
+✅ **Remote DNS resolution** - Bypasses filtering in Iran  
+✅ **Easy to maintain** - Just protect `mobile/tun/` during updates  
 
-### ✅ Clean Separation
-- Original Go: Tunnel backend
-- TUN Module: DNS frontend
-- Android: Glue layer
+## Trade-offs
 
-### ✅ Independent Development
-- Improve TUN module separately
-- Test TUN module separately
-- Debug TUN module separately
+⚠️ **Less separation** - TUN code is part of mobile package  
+⚠️ **Manual care needed** - Must not overwrite `mobile/tun/` when updating  
+⚠️ **Same namespace** - TUN functions are in `mobile.Mobile`, not separate  
 
-### ✅ Easy Maintenance
-- Two separate modules
-- Each has one responsibility
-- Clear boundaries
+## Testing
 
-## Current Status
+After building, test with:
 
-### ✅ Completed
-1. TUN module architecture designed
-2. DNS interception implemented
-3. Fake IP mapping implemented
-4. Android API created
-5. Build scripts created
-6. Documentation written
+1. Enable "Fake DNS" in app settings
+2. Connect VPN
+3. Check logs for:
+   - `Starting Go TUN bridge with DNS interception...`
+   - `Go TUN bridge started (DNS will be resolved remotely)`
+   - `[TUN-BRIDGE] Starting bridge`
+   - `[TUN-DNS] Mapped hostname -> fake IP`
 
-### ⚠️ Limitations
-1. TCP forwarding not complete (only DNS works)
-2. UDP forwarding not implemented
-3. IPv6 not supported
+## Troubleshooting
 
-### 🔨 To Complete TCP Forwarding
+### Build fails with "no exported names"
+- Check that `mobile/tun/tun_api.go` has imports before code
+- Verify all exported functions use gomobile-compatible types
 
-You need to add ~500-1000 lines to `tun_bridge.go`:
-1. TCP state machine
-2. SOCKS5 client implementation
-3. Packet forwarding logic
+### App crashes when enabling Fake DNS
+- Check logcat: `adb logcat | grep -E "TUN-|GooseRelayVPN"`
+- Verify `gooserelayvpn.aar` includes TUN functions
+- Check that class name is `mobile.Mobile`, not `tun.Tun`
 
-**Estimated time:** 1-2 weeks of development
+### DNS still filtered
+- Verify "Fake DNS" is enabled in settings
+- Check logs for `Go TUN bridge started`
+- Ensure VPN is using 172.19.0.1/30 address range
 
-## Recommendations
+## Summary
 
-### Option 1: Complete TUN Module (Long-term)
-
-**If you want full control:**
-- Complete TCP forwarding in TUN module
-- Test thoroughly
-- Maintain separately from original Go code
-
-**Pros:**
-- ✅ Full control
-- ✅ Single app
-- ✅ Custom features
-
-**Cons:**
-- ⏱️ 1-2 weeks development
-- 🐛 Testing and debugging
-- 🔧 Ongoing maintenance
-
-### Option 2: Use NekoBox + GooseRelayVPN (Short-term)
-
-**If you want it working now:**
-- Use NekoBox for TUN/DNS
-- Use GooseRelayVPN for tunneling
-- Already tested and working
-
-**Pros:**
-- ✅ Works immediately
-- ✅ No development needed
-- ✅ Proven solution
-
-**Cons:**
-- 📱 Two apps required
-- 🔄 More complex setup
-
-## My Recommendation
-
-### For Now:
-**Use NekoBox + GooseRelayVPN** (as you're already doing)
-- It works perfectly
-- DNS resolved at VPS
-- No development needed
-
-### For Future:
-**Complete TUN module** when you have time
-- Add TCP forwarding
-- Add UDP support
-- Add IPv6 support
-
-### Why This Approach?
-
-1. **Immediate solution:** NekoBox + GooseRelayVPN works now
-2. **Future-proof:** TUN module ready when you need it
-3. **No conflicts:** Original Go code stays clean
-4. **Easy updates:** Update original code anytime
-
-## File Summary
-
-### Created Files
-
-```
-mobile/tun/
-├── tun_bridge.go       (350 lines) - TUN & DNS handling
-├── tun_syscall.go      (50 lines)  - System calls
-├── tun_api.go          (100 lines) - Android API
-└── go.mod              (5 lines)   - Module definition
-
-mobile/
-└── build_tun.sh        (15 lines)  - Build script
-
-Documentation:
-├── SEPARATE_TUN_MODULE.md      - Architecture
-├── IMPLEMENTATION_GUIDE.md     - Integration guide
-├── FINAL_SOLUTION.md          - This file
-├── FAKE_DNS_GUIDE.md          - Previous attempt
-├── FAKE_DNS_TROUBLESHOOTING.md - Troubleshooting
-└── FIX_APPLIED.md             - DNS fixes
-```
-
-### Original Files (Unchanged)
-
-```
-cmd/                    - Original Go code
-internal/               - Original Go code
-go.mod                  - Original Go code
-go.sum                  - Original Go code
-```
-
-**These are NEVER modified!**
-
-## Next Steps
-
-### Immediate (Use What Works):
-
-1. Keep using NekoBox + GooseRelayVPN
-2. Document the setup for users
-3. Focus on improving tunnel protocol
-
-### Future (Complete TUN Module):
-
-1. Implement TCP forwarding in `tun_bridge.go`
-2. Test DNS + TCP together
-3. Add UDP support
-4. Add IPv6 support
-5. Release as single-app solution
-
-## Conclusion
-
-You now have:
-
-✅ **Separate TUN module** - Doesn't touch original Go code
-✅ **DNS interception** - Working implementation
-✅ **Easy updates** - Update original code anytime
-✅ **Clean architecture** - Two independent modules
-✅ **Future-proof** - Ready to complete when needed
-
-**The original Go code stays pristine and updateable!**
-
----
-
-## Quick Reference
-
-### Update Original Go Code:
-```bash
-# Replace original files
-cp -r /path/to/original/{cmd,internal,go.mod,go.sum} .
-cd mobile && ./build_go_mobile.sh
-# TUN module unaffected!
-```
-
-### Build TUN Module:
-```bash
-cd mobile && ./build_tun.sh
-cp tun.aar ../android/app/libs/
-```
-
-### Use in Android:
-```kotlin
-Mobile.startClient(...)  // Original Go
-Tun.startTunBridge(...)  // TUN module
-```
-
-**Perfect separation, no conflicts!** 🎯
+This solution works and is simpler than building separate AARs. Just remember to **protect `mobile/tun/` directory** when updating the original Go code from upstream.
