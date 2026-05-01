@@ -78,7 +78,7 @@ object GlobalSettingsStore {
             splitTunnelingEnabled = this[KEY_SPLIT_TUNNELING_ENABLED] ?: false,
             splitPackagesCsv = this[KEY_SPLIT_PACKAGES] ?: "",
             customDnsServers = this[KEY_CUSTOM_DNS_SERVERS] ?: "",
-            fakeDnsEnabled = this[KEY_FAKE_DNS_ENABLED] ?: false,
+            fakeDnsEnabled = this[KEY_FAKE_DNS_ENABLED] ?: true,
             internetSharingEnabled = this[KEY_INTERNET_SHARING_ENABLED] ?: false,
             internetSharingSocksPort = this[KEY_INTERNET_SHARING_SOCKS_PORT]?.toIntOrNull() ?: 8090,
             internetSharingHttpPort = this[KEY_INTERNET_SHARING_HTTP_PORT]?.toIntOrNull() ?: 8091,

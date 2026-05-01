@@ -26,7 +26,9 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86")
+            // For debug builds: build universal APK (single APK with all ABIs)
+            // For production, you can configure separate APKs if needed
+            abiFilters.clear()
         }
     }
 
@@ -81,6 +83,8 @@ android {
 
     splits {
         abi {
+            // Generate split APKs plus a universal APK.
+            // CI debug upload selects only universal; release workflow uploads all.
             isEnable = true
             reset()
             include("arm64-v8a", "armeabi-v7a", "x86")
