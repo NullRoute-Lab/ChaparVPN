@@ -108,7 +108,7 @@ fun InfoScreen(onBack: () -> Unit) {
                                 Text(
                                     text = stringResource(R.string.info_overview_subtitle),
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = MdvColor.OnSurfaceVariant
+                                    color = MdvColor.OnSurface
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
                                 AssistChip(
