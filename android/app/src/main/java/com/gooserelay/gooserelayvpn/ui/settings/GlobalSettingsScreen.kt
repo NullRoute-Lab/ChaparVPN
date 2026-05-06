@@ -86,12 +86,12 @@ fun GlobalSettingsScreen(vm: GlobalSettingsViewModel = viewModel()) {
     var sharingHttpPortText by remember(current.internetSharingHttpPort) {
         mutableStateOf(current.internetSharingHttpPort.toString())
     }
-    var modeExpanded by remember { mutableStateOf(false) }
-    var showAppPicker by remember { mutableStateOf(false) }
-    var availableQuery by remember { mutableStateOf("") }
-    var selectedQuery by remember { mutableStateOf("") }
-    var activeTab by remember { mutableStateOf("AVAILABLE") }
-    var draftAppSelection by remember { mutableStateOf(parseCsv(current.splitPackagesCsv).toMutableSet()) }
+    var modeExpanded by remember(current) { mutableStateOf(false) }
+    var showAppPicker by remember(current) { mutableStateOf(false) }
+    var availableQuery by remember(current) { mutableStateOf("") }
+    var selectedQuery by remember(current) { mutableStateOf("") }
+    var activeTab by remember(current) { mutableStateOf("AVAILABLE") }
+    var draftAppSelection by remember(current) { mutableStateOf(parseCsv(current.splitPackagesCsv).toMutableSet()) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val socksPortValue = sharingSocksPortText.toIntOrNull()
