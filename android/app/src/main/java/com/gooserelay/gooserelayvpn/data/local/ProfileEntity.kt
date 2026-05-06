@@ -13,7 +13,7 @@ data class ProfileEntity(
     val socksUser: String = "",
     val socksPass: String = "",
     val googleHost: String = "216.239.38.120",
-    val sniJson: String = "[]",
+    val sniJson: String = "[\"www.google.com\",\"mail.google.com\",\"accounts.google.com\"]",
     val scriptKeysText: String = "",
     val tunnelKey: String = "",
     val isSelected: Boolean = false,

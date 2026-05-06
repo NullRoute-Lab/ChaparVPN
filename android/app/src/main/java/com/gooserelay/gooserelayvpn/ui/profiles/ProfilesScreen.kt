@@ -177,7 +177,7 @@ private fun ProfileEditorDialog(
     var socksUser by remember { mutableStateOf(profile?.socksUser ?: "") }
     var socksPass by remember { mutableStateOf(profile?.socksPass ?: "") }
     var googleHost by remember { mutableStateOf(profile?.googleHost ?: "216.239.38.120") }
-    var sniCsv by remember { mutableStateOf(profile?.sniJson?.replace("[", "")?.replace("]", "")?.replace("\"", "") ?: "") }
+    var sniCsv by remember { mutableStateOf(profile?.sniJson?.replace("[", "")?.replace("]", "")?.replace("\"", "") ?: "www.google.com, mail.google.com, accounts.google.com") }
     var scriptKeysText by remember { mutableStateOf(profile?.scriptKeysText ?: "") }
     var tunnelKey by remember { mutableStateOf(profile?.tunnelKey ?: "") }
     var showErrorDialog by remember { mutableStateOf<String?>(null) }
