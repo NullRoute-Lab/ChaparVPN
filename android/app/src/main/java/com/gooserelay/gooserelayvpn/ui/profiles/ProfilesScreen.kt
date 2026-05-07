@@ -43,6 +43,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -70,29 +71,39 @@ data class ScriptKeyEntry(
 )
 
 fun parseScriptKeysText(text: String): List<ScriptKeyEntry> {
-    return text.lines()
+    Log.d("ProfilesScreen", "parseScriptKeysText input: '$text'")
+    val result = text.lines()
         .map { it.trim() }
         .filter { it.isNotEmpty() }
         .map { line ->
             if (line.contains("|")) {
                 val parts = line.split("|")
-                ScriptKeyEntry(
+                val entry = ScriptKeyEntry(
                     id = parts.getOrElse(0) { "" }.trim(),
                     account = parts.getOrElse(1) { "" }.trim()
                 )
+                Log.d("ProfilesScreen", "Parsed pipe: id='${entry.id}', account='${entry.account}'")
+                entry
             } else {
+                Log.d("ProfilesScreen", "Parsed no-pipe: id='${line.trim()}'")
                 ScriptKeyEntry(id = line.trim(), account = "")
             }
         }
+    Log.d("ProfilesScreen", "parseScriptKeysText result: $result")
+    return result
 }
 
 fun scriptKeysToText(entries: List<ScriptKeyEntry>): String {
+    Log.d("ProfilesScreen", "scriptKeysToText input: ${entries.size} entries")
+    entries.forEachIndexed { i, entry ->
+        Log.d("ProfilesScreen", "  [$i] id='${entry.id}', account='${entry.account}'")
+    }
     val result = entries
         .filter { it.id.isNotBlank() }
         .joinToString("\n") { entry ->
             if (entry.account.isNotBlank()) "${entry.id}|${entry.account}" else entry.id
         }
-    Log.d("ProfilesScreen", "scriptKeysToText converted entries to: $result")
+    Log.d("ProfilesScreen", "scriptKeysToText output: '$result'")
     return result
 }
 
@@ -223,6 +234,17 @@ private fun ProfileEditorDialog(
     var idleSlotsPerBucket by remember { mutableStateOf((profile?.idleSlotsPerBucket ?: 1).toString()) }
     var showErrorDialog by remember { mutableStateOf<String?>(null) }
 
+    Log.d("ProfilesScreen", "=== DIALOG INIT === profile=${profile?.name ?: "NEW"}")
+    Log.d("ProfilesScreen", "Loaded scriptKeysText: '${profile?.scriptKeysText ?: "(empty)"}'")
+    Log.d("ProfilesScreen", "Parsed scriptKeyEntries (${scriptKeyEntries.size}): $scriptKeyEntries")
+
+    LaunchedEffect(scriptKeyEntries) {
+        Log.d("ProfilesScreen", "*** scriptKeyEntries CHANGED (${scriptKeyEntries.size} items) ***")
+        scriptKeyEntries.forEachIndexed { i, entry ->
+            Log.d("ProfilesScreen", "  [$i] id='${entry.id}', account='${entry.account}'")
+        }
+    }
+
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         runCatching {
@@ -247,15 +269,24 @@ private fun ProfileEditorDialog(
             }
             val keys = when {
                 root.get("script_keys")?.isJsonArray == true -> {
+                    Log.d("ProfilesScreen", "=== IMPORTING SCRIPT KEYS FROM JSON ===")
                     root.getAsJsonArray("script_keys")?.mapNotNull { element ->
                         when {
                             element.isJsonObject -> {
                                 val obj = element.asJsonObject
                                 val id = obj.get("id")?.asString?.trim()
                                 val account = obj.get("account")?.asString?.trim()
+                                Log.d("ProfilesScreen", "Import JSON obj: id='$id', account='$account'")
                                 if (id.isNullOrBlank()) null
-                                else if (account.isNullOrBlank()) id
-                                else "$id|$account"
+                                else if (account.isNullOrBlank()) {
+                                    Log.d("ProfilesScreen", "  -> No account, saving as: '$id'")
+                                    id
+                                }
+                                else {
+                                    val result = "$id|$account"
+                                    Log.d("ProfilesScreen", "  -> With account, saving as: '$result'")
+                                    result
+                                }
                             }
                             element.isJsonPrimitive -> element.asString.trim()
                             else -> null
@@ -264,9 +295,11 @@ private fun ProfileEditorDialog(
                 }
                 else -> ""
             }
+            Log.d("ProfilesScreen", "Final imported keys text: '$keys'")
             scriptKeysText = keys
-            Log.d("ProfilesScreen", "Imported script keys text: $keys")
+            Log.d("ProfilesScreen", "About to parse imported keys with parseScriptKeysText()")
             scriptKeyEntries = parseScriptKeysText(keys)
+            Log.d("ProfilesScreen", "After parsing, scriptKeyEntries has ${scriptKeyEntries.size} items")
             coalesceStepMs = (root.get("coalesce_step_ms")?.asInt ?: 0).toString()
             idleSlotsPerBucket = (root.get("idle_slots_per_bucket")?.asInt?.coerceIn(1, 3) ?: 1).toString()
             tunnelKey = root.get("tunnel_key")?.asString ?: tunnelKey
@@ -311,8 +344,13 @@ private fun ProfileEditorDialog(
                 }
                 val sniJson = sniCsv.split(",").map { it.trim() }.filter { it.isNotBlank() }
                     .joinToString(prefix = "[\"", postfix = "\"]", separator = "\",\"")
+                Log.d("ProfilesScreen", "=== SAVING PROFILE ===")
+                Log.d("ProfilesScreen", "scriptKeyEntries state (${scriptKeyEntries.size} entries):")
+                scriptKeyEntries.forEachIndexed { i, entry ->
+                    Log.d("ProfilesScreen", "  [$i] id='${entry.id}', account='${entry.account}'")
+                }
                 val scriptKeysForSave = scriptKeysToText(scriptKeyEntries)
-                Log.d("ProfilesScreen", "Saving profile with scriptKeysText: $scriptKeysForSave")
+                Log.d("ProfilesScreen", "Final scriptKeysText to save: '$scriptKeysForSave'")
                 onSave(
                     ProfileEntity(
                         id = profile?.id ?: 0,

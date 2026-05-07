@@ -24,9 +24,8 @@ object ConfigGenerator {
             if (profile.coalesceStepMs > 0) {
                 addProperty("coalesce_step_ms", profile.coalesceStepMs)
             }
-            if (profile.idleSlotsPerBucket > 1) {
-                addProperty("idle_slots_per_bucket", profile.idleSlotsPerBucket)
-            }
+            // Always include idle_slots_per_bucket (don't skip if it's 1)
+            addProperty("idle_slots_per_bucket", profile.idleSlotsPerBucket)
         }
         val json = gson.toJson(root)
         Log.d("ConfigGenerator", "Generated full config: $json")
