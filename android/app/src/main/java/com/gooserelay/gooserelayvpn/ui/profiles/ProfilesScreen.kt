@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,8 +18,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
@@ -31,6 +33,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -45,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -57,6 +61,36 @@ import com.gooserelay.gooserelayvpn.ui.theme.MdvColor
 import com.gooserelay.gooserelayvpn.ui.theme.MdvSpace
 import com.gooserelay.gooserelayvpn.ui.profiles.ProfilesViewModel
 import com.gooserelay.gooserelayvpn.util.ConfigGenerator
+
+data class ScriptKeyEntry(
+    val id: String = "",
+    val account: String = ""
+)
+
+fun parseScriptKeysText(text: String): List<ScriptKeyEntry> {
+    return text.lines()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .map { line ->
+            if (line.contains("|")) {
+                val parts = line.split("|")
+                ScriptKeyEntry(
+                    id = parts.getOrElse(0) { "" }.trim(),
+                    account = parts.getOrElse(1) { "" }.trim()
+                )
+            } else {
+                ScriptKeyEntry(id = line.trim(), account = "")
+            }
+        }
+}
+
+fun scriptKeysToText(entries: List<ScriptKeyEntry>): String {
+    return entries
+        .filter { it.id.isNotBlank() }
+        .joinToString("\n") { entry ->
+            if (entry.account.isNotBlank()) "${entry.id}|${entry.account}" else entry.id
+        }
+}
 
 @Composable
 fun ProfilesScreen(
@@ -179,6 +213,7 @@ private fun ProfileEditorDialog(
     var googleHost by remember { mutableStateOf(profile?.googleHost ?: "216.239.38.120") }
     var sniCsv by remember { mutableStateOf(profile?.sniJson?.replace("[", "")?.replace("]", "")?.replace("\"", "") ?: "www.google.com, mail.google.com, accounts.google.com") }
     var scriptKeysText by remember { mutableStateOf(profile?.scriptKeysText ?: "") }
+    var scriptKeyEntries by remember { mutableStateOf(parseScriptKeysText(profile?.scriptKeysText ?: "")) }
     var tunnelKey by remember { mutableStateOf(profile?.tunnelKey ?: "") }
     var coalesceStepMs by remember { mutableStateOf((profile?.coalesceStepMs ?: 0).toString()) }
     var idleSlotsPerBucket by remember { mutableStateOf((profile?.idleSlotsPerBucket ?: 1).toString()) }
@@ -226,6 +261,7 @@ private fun ProfileEditorDialog(
                 else -> ""
             }
             scriptKeysText = keys
+            scriptKeyEntries = parseScriptKeysText(keys)
             coalesceStepMs = (root.get("coalesce_step_ms")?.asInt ?: 0).toString()
             idleSlotsPerBucket = (root.get("idle_slots_per_bucket")?.asInt?.coerceIn(1, 3) ?: 1).toString()
             tunnelKey = root.get("tunnel_key")?.asString ?: tunnelKey
@@ -244,7 +280,7 @@ private fun ProfileEditorDialog(
             googleHost = googleHost,
             sniJson = if (sniCsv.isBlank()) "[]" else sniCsv.split(",").map { it.trim() }.filter { it.isNotBlank() }
                 .joinToString(prefix = "[\"", postfix = "\"]", separator = "\",\""),
-            scriptKeysText = scriptKeysText,
+            scriptKeysText = scriptKeysToText(scriptKeyEntries),
             tunnelKey = tunnelKey,
             coalesceStepMs = coalesceStepMs.toIntOrNull() ?: 0,
             idleSlotsPerBucket = idleSlotsPerBucket.toIntOrNull()?.coerceIn(1, 3) ?: 1,
@@ -259,7 +295,7 @@ private fun ProfileEditorDialog(
         confirmButton = {
             Button(onClick = {
                 val error = when {
-                    scriptKeysText.isBlank() -> "Script keys are required"
+                    scriptKeyEntries.none { it.id.isNotBlank() } -> "At least one script key is required"
                     tunnelKey.isBlank() -> "Tunnel key is required"
                     (socksUser.isBlank()) != (socksPass.isBlank()) -> "socks_user and socks_pass must both be set or both be empty"
                     else -> null
@@ -281,7 +317,7 @@ private fun ProfileEditorDialog(
                         socksPass = socksPass,
                         googleHost = googleHost,
                         sniJson = sniJson,
-                        scriptKeysText = scriptKeysText,
+                        scriptKeysText = scriptKeysToText(scriptKeyEntries),
                         tunnelKey = tunnelKey,
                         coalesceStepMs = coalesceStepMs.toIntOrNull() ?: 0,
                         idleSlotsPerBucket = idleSlotsPerBucket.toIntOrNull()?.coerceIn(1, 3) ?: 1,
@@ -313,8 +349,10 @@ private fun ProfileEditorDialog(
                 OutlinedTextField(value = socksPass, onValueChange = { socksPass = it }, label = { Text("socks_pass") })
                 OutlinedTextField(value = googleHost, onValueChange = { googleHost = it }, label = { Text("google_host") })
                 OutlinedTextField(value = sniCsv, onValueChange = { sniCsv = it }, label = { Text("sni (comma separated)") })
-                Text("script_keys: one Deployment ID per line. Optional: add '|account_name' to enable per-account parallelism", style = MaterialTheme.typography.bodySmall, color = MdvColor.OnSurfaceVariant)
-                OutlinedTextField(value = scriptKeysText, onValueChange = { scriptKeysText = it }, label = { Text("script_keys (id or id|account per line)") }, minLines = 3)
+                ScriptKeysEditor(
+                    entries = scriptKeyEntries,
+                    onEntriesChanged = { scriptKeyEntries = it }
+                )
                 OutlinedTextField(value = tunnelKey, onValueChange = { tunnelKey = it }, label = { Text("tunnel_key") })
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = coalesceStepMs, onValueChange = { coalesceStepMs = it.filter(Char::isDigit) }, label = { Text("coalesce_step_ms (0-40)") }, modifier = Modifier.weight(1f), singleLine = true)
@@ -337,6 +375,85 @@ private fun ProfileEditorDialog(
             title = { Text("Error") },
             text = { Text(dialogError) }
         )
+    }
+}
+
+@Composable
+private fun ScriptKeysEditor(
+    entries: List<ScriptKeyEntry>,
+    onEntriesChanged: (List<ScriptKeyEntry>) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            "script_keys: For per-account parallelism, add Deployment ID and account name (e.g., id|account)",
+            style = MaterialTheme.typography.bodySmall,
+            color = MdvColor.OnSurfaceVariant
+        )
+
+        entries.forEachIndexed { index, entry ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = entry.id,
+                    onValueChange = { newId ->
+                        val newEntries = entries.toMutableList()
+                        newEntries[index] = entry.copy(id = newId)
+                        onEntriesChanged(newEntries)
+                    },
+                    label = { Text("Deployment ID") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = entry.account,
+                    onValueChange = { newAccount ->
+                        val newEntries = entries.toMutableList()
+                        newEntries[index] = entry.copy(account = newAccount)
+                        onEntriesChanged(newEntries)
+                    },
+                    label = { Text("Account") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+                IconButton(
+                    onClick = {
+                        val newEntries = entries.toMutableList()
+                        newEntries.removeAt(index)
+                        onEntriesChanged(newEntries)
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete",
+                        tint = MdvColor.Error
+                    )
+                }
+            }
+        }
+
+        OutlinedButton(
+            onClick = {
+                val newEntries = entries.toMutableList()
+                newEntries.add(ScriptKeyEntry())
+                onEntriesChanged(newEntries)
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Add script key")
+        }
     }
 }
 
