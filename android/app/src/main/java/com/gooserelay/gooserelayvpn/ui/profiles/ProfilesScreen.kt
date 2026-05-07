@@ -180,6 +180,8 @@ private fun ProfileEditorDialog(
     var sniCsv by remember { mutableStateOf(profile?.sniJson?.replace("[", "")?.replace("]", "")?.replace("\"", "") ?: "www.google.com, mail.google.com, accounts.google.com") }
     var scriptKeysText by remember { mutableStateOf(profile?.scriptKeysText ?: "") }
     var tunnelKey by remember { mutableStateOf(profile?.tunnelKey ?: "") }
+    var coalesceStepMs by remember { mutableStateOf((profile?.coalesceStepMs ?: 0).toString()) }
+    var idleSlotsPerBucket by remember { mutableStateOf((profile?.idleSlotsPerBucket ?: 1).toString()) }
     var showErrorDialog by remember { mutableStateOf<String?>(null) }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -205,10 +207,27 @@ private fun ProfileEditorDialog(
                 else -> ""
             }
             val keys = when {
-                root.get("script_keys")?.isJsonArray == true -> root.getAsJsonArray("script_keys")?.mapNotNull { it.asString }?.joinToString("\n") ?: ""
+                root.get("script_keys")?.isJsonArray == true -> {
+                    root.getAsJsonArray("script_keys")?.mapNotNull { element ->
+                        when {
+                            element.isJsonObject -> {
+                                val obj = element.asJsonObject
+                                val id = obj.get("id")?.asString?.trim()
+                                val account = obj.get("account")?.asString?.trim()
+                                if (id.isNullOrBlank()) null
+                                else if (account.isNullOrBlank()) id
+                                else "$id|$account"
+                            }
+                            element.isJsonPrimitive -> element.asString.trim()
+                            else -> null
+                        }
+                    }?.filter { it.isNotBlank() }?.joinToString("\n") ?: ""
+                }
                 else -> ""
             }
             scriptKeysText = keys
+            coalesceStepMs = (root.get("coalesce_step_ms")?.asInt ?: 0).toString()
+            idleSlotsPerBucket = (root.get("idle_slots_per_bucket")?.asInt?.coerceIn(1, 3) ?: 1).toString()
             tunnelKey = root.get("tunnel_key")?.asString ?: tunnelKey
         }
     }
@@ -227,8 +246,8 @@ private fun ProfileEditorDialog(
                 .joinToString(prefix = "[\"", postfix = "\"]", separator = "\",\""),
             scriptKeysText = scriptKeysText,
             tunnelKey = tunnelKey,
-            coalesceStepMs = profile?.coalesceStepMs ?: 0,
-            idleSlotsPerBucket = profile?.idleSlotsPerBucket ?: 1,
+            coalesceStepMs = coalesceStepMs.toIntOrNull() ?: 0,
+            idleSlotsPerBucket = idleSlotsPerBucket.toIntOrNull()?.coerceIn(1, 3) ?: 1,
             isSelected = profile?.isSelected ?: false,
             createdAt = profile?.createdAt ?: System.currentTimeMillis()
         )
@@ -264,8 +283,8 @@ private fun ProfileEditorDialog(
                         sniJson = sniJson,
                         scriptKeysText = scriptKeysText,
                         tunnelKey = tunnelKey,
-                        coalesceStepMs = profile?.coalesceStepMs ?: 0,
-                        idleSlotsPerBucket = profile?.idleSlotsPerBucket ?: 1,
+                        coalesceStepMs = coalesceStepMs.toIntOrNull() ?: 0,
+                        idleSlotsPerBucket = idleSlotsPerBucket.toIntOrNull()?.coerceIn(1, 3) ?: 1,
                         isSelected = profile?.isSelected ?: false,
                         createdAt = profile?.createdAt ?: System.currentTimeMillis()
                     )
@@ -294,8 +313,13 @@ private fun ProfileEditorDialog(
                 OutlinedTextField(value = socksPass, onValueChange = { socksPass = it }, label = { Text("socks_pass") })
                 OutlinedTextField(value = googleHost, onValueChange = { googleHost = it }, label = { Text("google_host") })
                 OutlinedTextField(value = sniCsv, onValueChange = { sniCsv = it }, label = { Text("sni (comma separated)") })
-                OutlinedTextField(value = scriptKeysText, onValueChange = { scriptKeysText = it }, label = { Text("script_keys (one per line)") }, minLines = 3)
+                Text("script_keys: one Deployment ID per line. Optional: add '|account_name' to enable per-account parallelism", style = MaterialTheme.typography.bodySmall, color = MdvColor.OnSurfaceVariant)
+                OutlinedTextField(value = scriptKeysText, onValueChange = { scriptKeysText = it }, label = { Text("script_keys (id or id|account per line)") }, minLines = 3)
                 OutlinedTextField(value = tunnelKey, onValueChange = { tunnelKey = it }, label = { Text("tunnel_key") })
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value = coalesceStepMs, onValueChange = { coalesceStepMs = it.filter(Char::isDigit) }, label = { Text("coalesce_step_ms (0-40)") }, modifier = Modifier.weight(1f), singleLine = true)
+                    OutlinedTextField(value = idleSlotsPerBucket, onValueChange = { idleSlotsPerBucket = it.filter(Char::isDigit) }, label = { Text("idle_slots (1-3)") }, modifier = Modifier.weight(1f), singleLine = true)
+                }
                 Spacer(Modifier.height(2.dp))
             }
         }
