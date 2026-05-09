@@ -110,8 +110,6 @@ fun LogsScreen(onBack: () -> Unit) {
 
     val listState = rememberLazyListState()
     var autoScrollEnabled by remember { mutableStateOf(true) }
-    var lockedIndex by remember { mutableStateOf(0) }
-    var lockedOffset by remember { mutableStateOf(0) }
     val context = LocalContext.current
 
     val shareLogs: () -> Unit = {
@@ -126,20 +124,12 @@ fun LogsScreen(onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, autoScrollEnabled) {
-        if (!autoScrollEnabled) {
-            lockedIndex = listState.firstVisibleItemIndex
-            lockedOffset = listState.firstVisibleItemScrollOffset
-        }
-    }
+
 
     LaunchedEffect(uiLogItems.size, activeFilter) {
         if (uiLogItems.isEmpty()) return@LaunchedEffect
         if (autoScrollEnabled) {
             listState.scrollToItem(uiLogItems.size - 1)
-        } else {
-            val safeIndex = lockedIndex.coerceIn(0, (uiLogItems.size - 1).coerceAtLeast(0))
-            listState.scrollToItem(safeIndex, lockedOffset)
         }
     }
 
@@ -153,10 +143,6 @@ fun LogsScreen(onBack: () -> Unit) {
                         Icon(Icons.Filled.Share, contentDescription = stringResource(R.string.logs_share))
                     }
                     FilledTonalIconButton(onClick = {
-                        if (autoScrollEnabled) {
-                            lockedIndex = listState.firstVisibleItemIndex
-                            lockedOffset = listState.firstVisibleItemScrollOffset
-                        }
                         autoScrollEnabled = !autoScrollEnabled
                     }) {
                         Icon(Icons.Filled.AutoMode, contentDescription = stringResource(R.string.logs_auto))

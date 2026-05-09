@@ -86,7 +86,9 @@ object VpnManager {
     }
 
     fun appendLog(line: String) {
-        appendLogInternal(line, LogSource.ANDROID)
+        val dateFormat = SimpleDateFormat("yyyy/MM/dd HH:mm:ss", Locale.US)
+        val timestamp = dateFormat.format(Date())
+        appendLogInternal("$timestamp $line", LogSource.ANDROID)
     }
 
     fun appendCoreLog(line: String) {
