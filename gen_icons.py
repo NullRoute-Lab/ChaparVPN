@@ -27,8 +27,11 @@ def generate_icons(project_dir):
     # Background color is #6C63FF
     bg_color = (108, 99, 255, 255)
     
-    # Load foreground
+    # Load foreground and crop transparency
     fg_img = Image.open(foreground_raw_path).convert("RGBA")
+    bbox = fg_img.getbbox()
+    if bbox:
+        fg_img = fg_img.crop(bbox)
     
     densities = {
         'mdpi': 48,
@@ -42,9 +45,9 @@ def generate_icons(project_dir):
         mipmap_dir = os.path.join(res_dir, f'mipmap-{density}')
         os.makedirs(mipmap_dir, exist_ok=True)
         
-        # Calculate foreground size (about 60% of total size to allow padding)
+        # Calculate foreground size (about 75% of total size to allow padding)
         # Standard icon is 48dp, safe zone is inner 30dp or so
-        fg_size = int(size * 0.6)
+        fg_size = int(size * 0.75)
         fg_resized = fg_img.resize((fg_size, fg_size), Image.Resampling.LANCZOS)
         
         # Center coordinate
@@ -68,7 +71,7 @@ def generate_icons(project_dir):
         # We'll generate a 432x432 (xxxhdpi equivalent for 108dp) transparent foreground
         if density == 'xxxhdpi':
             adaptive_size = 432
-            adaptive_fg_size = int(432 * 0.65) # Foreground takes ~65% 
+            adaptive_fg_size = int(432 * 0.8) # Foreground takes ~80% to fill space well without clipping too much
             adaptive_fg_resized = fg_img.resize((adaptive_fg_size, adaptive_fg_size), Image.Resampling.LANCZOS)
             adaptive_fg = Image.new('RGBA', (adaptive_size, adaptive_size), (0, 0, 0, 0))
             adaptive_offset = ((adaptive_size - adaptive_fg_size) // 2, (adaptive_size - adaptive_fg_size) // 2)
