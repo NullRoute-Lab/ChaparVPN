@@ -26,6 +26,12 @@ object ConfigGenerator {
             }
             // Always include idle_slots_per_bucket (don't skip if it's 1)
             addProperty("idle_slots_per_bucket", profile.idleSlotsPerBucket)
+
+            addProperty("max_active_sessions", 2000)
+            addProperty("idle_session_timeout_ms", 30000)
+            addProperty("flush_size_kb", 128)
+            addProperty("idle_timeout_ms", 3000)
+            addProperty("sleep_step_ms", 3000)
         }
         val json = gson.toJson(root)
         Log.d("ConfigGenerator", "Generated full config: $json")

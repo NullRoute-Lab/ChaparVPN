@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kianmhz/GooseRelayVPN/internal/frame"
-	"github.com/kianmhz/GooseRelayVPN/internal/session"
+	"github.com/nullroute-lab/gooserelayvpn-androidclient/internal/frame"
+	"github.com/nullroute-lab/gooserelayvpn-androidclient/internal/session"
 )
 
 const (

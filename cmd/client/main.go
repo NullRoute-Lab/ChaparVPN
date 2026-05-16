@@ -13,10 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kianmhz/GooseRelayVPN/internal/carrier"
-	"github.com/kianmhz/GooseRelayVPN/internal/config"
-	"github.com/kianmhz/GooseRelayVPN/internal/session"
-	"github.com/kianmhz/GooseRelayVPN/internal/socks"
+	"github.com/nullroute-lab/gooserelayvpn-androidclient/internal/carrier"
+	"github.com/nullroute-lab/gooserelayvpn-androidclient/internal/config"
+	"github.com/nullroute-lab/gooserelayvpn-androidclient/internal/session"
+	"github.com/nullroute-lab/gooserelayvpn-androidclient/internal/socks"
 )
 
 var version = "dev"

@@ -18,9 +18,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kianmhz/GooseRelayVPN/internal/frame"
-	"github.com/kianmhz/GooseRelayVPN/internal/protocol"
-	"github.com/kianmhz/GooseRelayVPN/internal/session"
+	"github.com/nullroute-lab/gooserelayvpn-androidclient/internal/frame"
+	"github.com/nullroute-lab/gooserelayvpn-androidclient/internal/protocol"
+	"github.com/nullroute-lab/gooserelayvpn-androidclient/internal/session"
 	"golang.org/x/net/proxy"
 )
 

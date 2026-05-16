@@ -1,6 +1,9 @@
-name: Manual Release
+name: Release
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag_name:
@@ -61,7 +64,11 @@ jobs:
 
       - name: Derive Android app version from tag
         run: |
-          TAG="${{ inputs.tag_name }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag_name }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
           VERSION_NAME="${TAG#v}"
           if [[ ! "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "tag_name must be SemVer like v1.2.3"
@@ -108,10 +115,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag_name }}
-          name: ${{ inputs.release_name != '' && inputs.release_name || inputs.tag_name }}
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+          name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_name != '' && inputs.release_name || (github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name) }}
           generate_release_notes: true
-          make_latest: ${{ inputs.make_latest && 'true' || 'false' }}
+          make_latest: ${{ github.event_name == 'workflow_dispatch' && (inputs.make_latest && 'true' || 'false') || 'true' }}
           files: |
             release-artifacts/*.aar
             release-artifacts/*.apk

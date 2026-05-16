@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/kianmhz/GooseRelayVPN/internal/frame"
+	"github.com/nullroute-lab/gooserelayvpn-androidclient/internal/frame"
 )
 
 func benchSID(b byte) [frame.SessionIDLen]byte {
