@@ -21,11 +21,18 @@ object ConfigGenerator {
             add("sni", parseSni(profile.sniJson))
             add("script_keys", parseScriptKeys(profile.scriptKeysText))
             addProperty("tunnel_key", profile.tunnelKey)
-            if (profile.coalesceStepMs > 0) {
-                addProperty("coalesce_step_ms", profile.coalesceStepMs)
-            }
-            // Always include idle_slots_per_bucket (don't skip if it's 1)
-            addProperty("idle_slots_per_bucket", profile.idleSlotsPerBucket)
+
+            // Golden Config variables for ultimate mobile stability
+            addProperty("idle_timeout_ms", 3000)
+            addProperty("sleep_step_ms", 3000)
+            addProperty("coalesce_step_ms", 20)
+            addProperty("idle_slots_per_bucket", 1)
+            addProperty("jitter_min_ms", 5)
+            addProperty("jitter_max_ms", 15)
+            addProperty("max_global_workers", 0)
+            addProperty("max_active_sessions", 2000)
+            addProperty("flush_size_kb", 128)
+            addProperty("idle_session_timeout_ms", 30000)
         }
         val json = gson.toJson(root)
         Log.d("ConfigGenerator", "Generated full config: $json")
