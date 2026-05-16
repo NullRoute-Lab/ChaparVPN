@@ -4,7 +4,7 @@
 
 Android client for GooseRelayVPN that runs the GooseRelay core through a Go mobile bridge and provides a complete Android UI for VPN lifecycle, profiles, logs, and settings.
 
-- Upstream core project: https://github.com/kianmhz/GooseRelayVPN
+- Upstream core project: https://github.com/nullroute-lab/GooseRelayVPN
 - This repository: Android-focused client implementation
 
 ## What This App Does
@@ -62,7 +62,7 @@ You still need upstream infrastructure prepared first:
 5. Connect in app and configure app/browser proxy as needed
 
 For full infra details, use upstream docs:
-- https://github.com/kianmhz/GooseRelayVPN
+- https://github.com/nullroute-lab/GooseRelayVPN
 
 ## Android Build (Local)
 
@@ -113,7 +113,7 @@ Manual signed release requires secrets:
 ## Credits
 
 1. Main project:
-   - https://github.com/kianmhz/GooseRelayVPN
+   - https://github.com/nullroute-lab/GooseRelayVPN
 
 2. Project that inspired the main project idea:
    - https://github.com/masterking32/MasterHttpRelayVPN

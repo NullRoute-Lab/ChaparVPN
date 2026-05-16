@@ -2,7 +2,7 @@
 
 این مخزن، کلاینت اندروید GooseRelayVPN است که هسته GooseRelay را از طریق Go mobile اجرا می‌کند و رابط کاربری کامل برای مدیریت VPN، پروفایل‌ها، لاگ‌ها و تنظیمات ارائه می‌دهد.
 
-- پروژه اصلی (هسته): https://github.com/kianmhz/GooseRelayVPN
+- پروژه اصلی (هسته): https://github.com/nullroute-lab/GooseRelayVPN
 - این مخزن: پیاده‌سازی کلاینت اندروید
 
 ## این اپ چه کاری انجام می‌دهد؟
@@ -59,7 +59,7 @@
 5. اتصال در اپ و تنظیم پراکسی برای برنامه/مرورگر (در صورت نیاز)
 
 راهنمای کامل زیرساخت در پروژه اصلی:
-- https://github.com/kianmhz/GooseRelayVPN
+- https://github.com/nullroute-lab/GooseRelayVPN
 
 ## ساخت محلی اندروید
 
@@ -110,7 +110,7 @@ Secretهای لازم برای انتشار دستی امضاشده:
 ## Credits
 
 1. پروژه اصلی:
-   - https://github.com/kianmhz/GooseRelayVPN
+   - https://github.com/nullroute-lab/GooseRelayVPN
 
 2. پروژه‌ای که ایده پروژه اصلی از آن الهام گرفته شده است:
    - https://github.com/masterking32/MasterHttpRelayVPN
