@@ -76,6 +76,8 @@ class GooseRelayVpnService : VpnService() {
     @Volatile
     private var activeLocalSocksPort: Int = DEFAULT_SOCKS_PORT
 
+    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "VPN Service created")
@@ -238,7 +240,18 @@ class GooseRelayVpnService : VpnService() {
                     builder.addAddress("10.0.0.2", 32)
                 }
                 
-                    .addRoute("0.0.0.0", 0)
+                builder.addRoute("0.0.0.0", 0)
+
+                // Prevent IPv6 DNS leaks: if we don't route IPv6 and provide an IPv6 DNS,
+                // Android may leak DNS requests to the cellular network's IPv6 DNS server,
+                // resulting in hijacked IPs like 10.10.34.36 from the ISP.
+                try {
+                    builder.addAddress("fc00::1", 128)
+                    builder.addRoute("::", 0)
+                } catch (e: Exception) {
+                    VpnManager.appendLog("IPv6 routing skipped: ${e.message}")
+                }
+
                 vpnDnsServers.forEach { builder.addDnsServer(it) }
                 VpnManager.appendLog("VPN DNS servers: ${vpnDnsServers.joinToString()}")
                 
@@ -330,6 +343,28 @@ class GooseRelayVpnService : VpnService() {
                     mobile.Mobile.startTun(vpnInterface!!.fd.toLong(), "127.0.0.1:$socksPort")
                 }
 
+                // Register Network Change detection to route TUN gracefully
+                val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                networkCallback?.let { cm.unregisterNetworkCallback(it) }
+                networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: android.net.Network) {
+                        val caps = cm.getNetworkCapabilities(network)
+                        if (caps == null || caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) return
+                        if (isStopping) return
+                        
+                        VpnManager.appendLog("Underlying network changed, updating VPN underlying network...")
+                        setUnderlyingNetworks(arrayOf(network))
+                    }
+                }
+                try {
+                    val request = android.net.NetworkRequest.Builder()
+                        .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        .build()
+                    cm.registerNetworkCallback(request, networkCallback!!)
+                } catch (e: Exception) {
+                    VpnManager.appendLog("Failed to register network callback: ${e.message}")
+                }
+
                 // Update state
                 VpnManager.updateState(VpnManager.VpnState.CONNECTED)
                 VpnManager.startTrafficMonitor(this@GooseRelayVpnService)
@@ -396,6 +431,14 @@ class GooseRelayVpnService : VpnService() {
                 httpProxyJob?.cancel()
                 sharingSocksJob?.cancel()
                 logTailJob?.cancel()
+
+                networkCallback?.let {
+                    runCatching {
+                        val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                        cm.unregisterNetworkCallback(it)
+                    }
+                    networkCallback = null
+                }
 
                 // Close sharing servers
                 runCatching { sharingSocksServer?.close() }

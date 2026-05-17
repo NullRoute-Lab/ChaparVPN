@@ -152,6 +152,7 @@ func StartClient(configPath string, logPath string) error {
 
 func StopClient() {
 	StopTun()
+	StopTunBridge()
 	mu.Lock()
 	defer mu.Unlock()
 	if cancelFn != nil {
@@ -194,19 +195,34 @@ func StopTun() {
 
 // TUN Bridge wrapper functions (calls mobile/tun subpackage)
 
-// StartTunBridge starts the TUN bridge with DNS interception
+// StartTunBridge starts the TUN bridge with DNS interception using FakeDNS proxy.
 func StartTunBridge(tunFd int64, mtu int64, socksAddr string) error {
-	return tun.StartTunBridge(int32(tunFd), int32(mtu), socksAddr)
+	proxyAddr, err := tun.StartFakeDNSProxy(socksAddr)
+	if err != nil {
+		return err
+	}
+	
+	key := &engine.Key{
+		Proxy:  "socks5://" + proxyAddr,
+		Device: fmt.Sprintf("fd://%d", tunFd),
+		MTU:    int(mtu),
+	}
+
+	engine.Insert(key)
+	engine.Start()
+	
+	return nil
 }
 
 // StopTunBridge stops the TUN bridge
 func StopTunBridge() {
-	tun.StopTunBridge()
+	engine.Stop()
+	tun.StopFakeDNSProxy()
 }
 
 // IsTunBridgeRunning returns true if bridge is active
 func IsTunBridgeRunning() bool {
-	return tun.IsTunBridgeRunning()
+	return tun.IsFakeDNSProxyRunning()
 }
 
 // GetTunBandwidth returns upload and download bytes.
