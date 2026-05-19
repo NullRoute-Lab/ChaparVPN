@@ -1,5 +1,6 @@
 package com.gooserelay.gooserelayvpn.ui.home
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import com.gooserelay.gooserelayvpn.R
 import com.gooserelay.gooserelayvpn.ui.components.mdv.cards.MdvCardHigh
 import com.gooserelay.gooserelayvpn.ui.components.mdv.cards.MdvCardLow
+import com.gooserelay.gooserelayvpn.ui.theme.ConnectedGreen
 import com.gooserelay.gooserelayvpn.ui.theme.DisconnectedRed
 import com.gooserelay.gooserelayvpn.ui.theme.MdvColor
 import com.gooserelay.gooserelayvpn.ui.theme.MdvSpace
@@ -31,6 +33,9 @@ fun MdvConnectionTelemetryCard(
     vpnState: VpnManager.VpnState,
     downBps: Long,
     upBps: Long,
+    downloadTotalBytes: Long,
+    uploadTotalBytes: Long,
+    connectedDurationSeconds: Long,
     proxyHost: String,
     proxyPort: Int,
     socksAuthEnabled: Boolean,
@@ -39,61 +44,130 @@ fun MdvConnectionTelemetryCard(
     scanStatus: VpnManager.ScanStatus = VpnManager.ScanStatus()
 ) {
     MdvCardLow(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.fillMaxWidth().padding(MdvSpace.S3)) {
-            Text(
-                text = stringResource(R.string.home_connection_status_title),
-                style = MaterialTheme.typography.labelSmall,
-                color = MdvColor.PrimaryDim
-            )
-            androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(MdvSpace.S1))
-            Text(
-                text = when (vpnState) {
-                    VpnManager.VpnState.CONNECTED -> stringResource(R.string.home_connection_running)
-                    VpnManager.VpnState.CONNECTING -> stringResource(R.string.home_connection_preparing)
-                    VpnManager.VpnState.DISCONNECTING -> stringResource(R.string.home_state_disconnecting)
-                    VpnManager.VpnState.ERROR -> stringResource(R.string.home_connection_error_check_logs)
-                    else -> stringResource(R.string.home_state_disconnected)
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MdvColor.OnSurface
-            )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MdvSpace.S4)
+        ) {
+            // Header Row: Status and Duration
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.home_connection_status_title).uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MdvColor.PrimaryDim,
+                        fontWeight = FontWeight.Bold
+                    )
+                    androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(2.dp))
+                    val statusText = when (vpnState) {
+                        VpnManager.VpnState.CONNECTED -> stringResource(R.string.home_connection_running)
+                        VpnManager.VpnState.CONNECTING -> stringResource(R.string.home_connection_preparing)
+                        VpnManager.VpnState.DISCONNECTING -> stringResource(R.string.home_state_disconnecting)
+                        VpnManager.VpnState.ERROR -> stringResource(R.string.home_connection_error_check_logs)
+                        else -> stringResource(R.string.home_state_disconnected)
+                    }
+                    val statusColor = when (vpnState) {
+                        VpnManager.VpnState.CONNECTED -> ConnectedGreen
+                        VpnManager.VpnState.ERROR -> DisconnectedRed
+                        else -> MdvColor.OnSurface
+                    }
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = statusColor,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
 
-            if (scanStatus.hasStats) {
-                androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(MdvSpace.S2))
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                    color = MdvColor.SurfaceHighest.copy(alpha = 0.55f)
+                if (connectedDurationSeconds > 0 ||
+                    vpnState == VpnManager.VpnState.CONNECTED ||
+                    vpnState == VpnManager.VpnState.CONNECTING
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = MdvSpace.S2, vertical = MdvSpace.S2),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(start = 8.dp)) {
+                        Text(
+                            text = "SESSION",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MdvColor.OnSurfaceVariant,
+                            fontWeight = FontWeight.Bold
+                        )
+                        androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = formatDuration(connectedDurationSeconds),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MdvColor.OnSurface,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            // Network Traffic Grid
+            if (downloadTotalBytes > 0 || uploadTotalBytes > 0 || downBps > 0 || upBps > 0) {
+                androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(MdvSpace.S3))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(MdvSpace.S3)
+                ) {
+                    // Download Column
+                    androidx.compose.material3.Surface(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MdvColor.SurfaceHigh
                     ) {
-                        Text(
-                            text = "Active: ${scanStatus.statsActive}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MdvColor.OnSurface
-                        )
-                        Text(
-                            text = "Sessions: open=${scanStatus.statsSessionsOpen} close=${scanStatus.statsSessionsClose}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MdvColor.OnSurfaceVariant
-                        )
-                        Text(
-                            text = "Polls: ok=${scanStatus.statsPollsOk} fail=${scanStatus.statsPollsFail}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MdvColor.OnSurfaceVariant
-                        )
-                        Text(
-                            text = "Bytes: out=${scanStatus.statsBytesOut} in=${scanStatus.statsBytesIn}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MdvColor.OnSurfaceVariant
-                        )
-                        if (scanStatus.accountStats.isNotBlank()) {
+                        Column(
+                            modifier = Modifier.padding(MdvSpace.S3),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
                             Text(
-                                text = "Accounts:\n${scanStatus.accountStats.replace(" | ", "\n")}",
+                                text = "↓ DOWNLOAD",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = ConnectedGreen,
+                                fontWeight = FontWeight.Bold
+                            )
+                            androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = formatSpeed(downBps),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MdvColor.OnSurface,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = formatBytes(downloadTotalBytes),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MdvColor.OnSurfaceVariant
+                            )
+                        }
+                    }
+
+                    // Upload Column
+                    androidx.compose.material3.Surface(
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MdvColor.SurfaceHigh
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(MdvSpace.S3),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "↑ UPLOAD",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MdvColor.PrimaryContainer,
+                                fontWeight = FontWeight.Bold
+                            )
+                            androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = formatSpeed(upBps),
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MdvColor.OnSurface,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = formatBytes(uploadTotalBytes),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MdvColor.OnSurfaceVariant
                             )
@@ -102,38 +176,155 @@ fun MdvConnectionTelemetryCard(
                 }
             }
 
-            androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(MdvSpace.S1))
-            Text(
-                text = stringResource(R.string.home_speed_row, formatSpeed(downBps), formatSpeed(upBps)),
-                style = MaterialTheme.typography.bodySmall,
-                color = MdvColor.OnSurfaceVariant
-            )
-            androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(MdvSpace.S2))
-            Text(
-                text = stringResource(R.string.home_socks_address, proxyHost, proxyPort),
-                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                color = MdvColor.OnSurface
-            )
-            if (socksAuthEnabled) {
-                androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(MdvSpace.S1))
-                Text(
-                    text = stringResource(R.string.home_socks_auth_title),
-                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                    color = MdvColor.OnSurface
-                )
-                if (socksUser.isNotBlank()) {
-                    Text(
-                        text = stringResource(R.string.home_socks_username, socksUser),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MdvColor.OnSurfaceVariant
-                    )
+            // Goose Core Relay Stats Card
+            if (scanStatus.hasStats) {
+                androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(MdvSpace.S3))
+                androidx.compose.material3.Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MdvColor.SurfaceHigh
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(MdvSpace.S3)
+                    ) {
+                        Text(
+                            text = "CORE RELAY STATISTICS",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MdvColor.PrimaryDim,
+                            fontWeight = FontWeight.Bold
+                        )
+                        androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(MdvSpace.S2))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Active Connections",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MdvColor.OnSurfaceVariant
+                            )
+                            Text(
+                                text = scanStatus.statsActive.toString(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MdvColor.OnSurface,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(6.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Sessions (Open / Closed)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MdvColor.OnSurfaceVariant
+                            )
+                            Text(
+                                text = "${scanStatus.statsSessionsOpen} / ${scanStatus.statsSessionsClose}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MdvColor.OnSurface,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(6.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Polls (Success / Failure)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MdvColor.OnSurfaceVariant
+                            )
+                            Text(
+                                text = "${scanStatus.statsPollsOk} / ${scanStatus.statsPollsFail}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (scanStatus.statsPollsFail > 0) DisconnectedRed else MdvColor.OnSurface,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(6.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Core Traffic (Out / In)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MdvColor.OnSurfaceVariant
+                            )
+                            Text(
+                                text = "${scanStatus.statsBytesOut} / ${scanStatus.statsBytesIn}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MdvColor.OnSurface,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        if (scanStatus.accountStats.isNotBlank()) {
+                            androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(8.dp))
+                            androidx.compose.foundation.layout.Spacer(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(1.dp)
+                                    .background(MdvColor.SurfaceHighest)
+                            )
+                            androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "ACCOUNTS STATS",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MdvColor.OnSurfaceVariant,
+                                fontWeight = FontWeight.Bold
+                            )
+                            androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(6.dp))
+                            
+                            val accounts = scanStatus.accountStats.split(" | ")
+                            accounts.forEach { account ->
+                                if (account.isNotBlank()) {
+                                    Text(
+                                        text = account,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MdvColor.OnSurfaceVariant,
+                                        modifier = Modifier.padding(vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
-                if (socksPass.isNotBlank()) {
-                    Text(
-                        text = stringResource(R.string.home_socks_password, socksPass),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MdvColor.OnSurfaceVariant
-                    )
+            }
+
+            // SOCKS5 Proxy Info
+            if (vpnState == VpnManager.VpnState.CONNECTED) {
+                androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(MdvSpace.S3))
+                Column(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("SOCKS5 Proxy", style = MaterialTheme.typography.bodySmall, color = MdvColor.OnSurfaceVariant)
+                        Text("$proxyHost:$proxyPort", style = MaterialTheme.typography.bodySmall, color = MdvColor.OnSurface, fontWeight = FontWeight.Bold)
+                    }
+                    if (socksAuthEnabled) {
+                        androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(4.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("SOCKS5 Auth", style = MaterialTheme.typography.bodySmall, color = MdvColor.OnSurfaceVariant)
+                            Text("Enabled", style = MaterialTheme.typography.bodySmall, color = MdvColor.OnSurface, fontWeight = FontWeight.Bold)
+                        }
+                        if (socksUser.isNotBlank()) {
+                            androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(2.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("  ↳ Credentials", style = MaterialTheme.typography.bodySmall, color = MdvColor.OnSurfaceVariant)
+                                Text("$socksUser:$socksPass", style = MaterialTheme.typography.bodySmall, color = MdvColor.OnSurfaceVariant)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -198,5 +389,29 @@ private fun formatSpeed(bps: Long): String {
         bps >= mb -> String.format("%.2f MB/s", bps / mb)
         bps >= kb -> String.format("%.1f KB/s", bps / kb)
         else -> "${bps} B/s"
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    val kb = 1024.0
+    val mb = kb * 1024.0
+    val gb = mb * 1024.0
+    return when {
+        bytes >= gb -> String.format("%.2f GB", bytes / gb)
+        bytes >= mb -> String.format("%.2f MB", bytes / mb)
+        bytes >= kb -> String.format("%.1f KB", bytes / kb)
+        else -> "$bytes B"
+    }
+}
+
+private fun formatDuration(seconds: Long): String {
+    val safeSeconds = seconds.coerceAtLeast(0L)
+    val hours = safeSeconds / 3600L
+    val minutes = (safeSeconds % 3600L) / 60L
+    val secs = safeSeconds % 60L
+    return if (hours > 0) {
+        "%d:%02d:%02d".format(hours, minutes, secs)
+    } else {
+        "%02d:%02d".format(minutes, secs)
     }
 }

@@ -77,6 +77,9 @@ fun HomeScreen(
     val vpnState by VpnManager.state.collectAsState()
     val upBps by VpnManager.uploadSpeedBps.collectAsState()
     val downBps by VpnManager.downloadSpeedBps.collectAsState()
+    val uploadTotalBytes by VpnManager.uploadTotalBytes.collectAsState()
+    val downloadTotalBytes by VpnManager.downloadTotalBytes.collectAsState()
+    val connectedDurationSeconds by VpnManager.connectedDurationSeconds.collectAsState()
     val selectedProfile by viewModel.selectedProfile.collectAsState()
     val error by VpnManager.errorMessage.collectAsState()
     val context = LocalContext.current
@@ -227,6 +230,9 @@ fun HomeScreen(
                             vpnState = vpnState,
                             downBps = downBps,
                             upBps = upBps,
+                            downloadTotalBytes = downloadTotalBytes,
+                            uploadTotalBytes = uploadTotalBytes,
+                            connectedDurationSeconds = connectedDurationSeconds,
                             proxyHost = proxyHost,
                             proxyPort = proxyPort,
                             socksAuthEnabled = socksAuthEnabled,
@@ -294,6 +300,9 @@ fun HomeScreen(
                     vpnState = vpnState,
                     downBps = downBps,
                     upBps = upBps,
+                    downloadTotalBytes = downloadTotalBytes,
+                    uploadTotalBytes = uploadTotalBytes,
+                    connectedDurationSeconds = connectedDurationSeconds,
                     proxyHost = proxyHost,
                     proxyPort = proxyPort,
                     socksAuthEnabled = socksAuthEnabled,
