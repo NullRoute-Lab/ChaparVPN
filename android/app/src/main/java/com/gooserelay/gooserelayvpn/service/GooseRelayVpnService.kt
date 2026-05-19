@@ -160,11 +160,18 @@ class GooseRelayVpnService : VpnService() {
                             configFile.absolutePath,
                             logFile.absolutePath
                         )
+                    } catch (_: CancellationException) {
+                        // Normal shutdown — coroutine was cancelled during disconnect.
+                        VpnManager.appendLog("Go core stopped (coroutine cancelled)")
                     } catch (e: Exception) {
-                        Log.e(TAG, "Go core error", e)
-                        VpnManager.appendLog("Go core error: ${e.message}")
-                        withContext(Dispatchers.Main) {
-                            VpnManager.setError("Go core error: ${e.message}")
+                        // Only log real errors, not context cancellation from Go.
+                        val msg = e.message ?: ""
+                        if (!msg.contains("context canceled", ignoreCase = true)) {
+                            Log.e(TAG, "Go core error", e)
+                            VpnManager.appendLog("Go core error: $msg")
+                            runCatching {
+                                VpnManager.setError("Go core error: $msg")
+                            }
                         }
                     }
                 }
@@ -393,40 +400,42 @@ class GooseRelayVpnService : VpnService() {
         
         VpnManager.updateState(VpnManager.VpnState.DISCONNECTING)
         
-        serviceScope.launch(Dispatchers.IO) {
+        // Use a separate scope so that serviceScope.cancel() in onDestroy()
+        // does not kill this coroutine mid-cleanup.
+        val stopScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        stopScope.launch {
             try {
                 connectJob?.cancel()
                 VpnManager.appendLog("Stopping VPN...")
+                tunBridgeActive = false
 
-                // Stop Go TUN bridge if active
-                if (tunBridgeActive) {
-                    try {
-                        val tunClass = Class.forName("mobile.Mobile")
-                        val stopMethod = tunClass.getMethod("stopTunBridge")
-                        stopMethod.invoke(null)
-                        VpnManager.appendLog("Go TUN bridge stopped")
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error stopping TUN bridge", e)
-                    }
-                    tunBridgeActive = false
-                }
-
-                // Stop Go client and Tun bridge
-                runCatching {
-                    if (mobile.Mobile.isRunning()) {
+                // Stop everything in Go layer via a single stopClient() call.
+                // Go's StopClient() internally handles StopTun/StopTunBridge
+                // with idempotent guards and panic recovery, so this is safe.
+                val stopThread = Thread {
+                    VpnManager.appendLog("Stopping Go core...")
+                    runCatching {
                         mobile.Mobile.stopClient()
-                    } else {
-                        VpnManager.appendLog("Go core already stopped")
+                    }.onFailure { e ->
+                        VpnManager.appendLog("Go core stop error: ${e.message}")
                     }
-                }.onFailure { e ->
-                    Log.e(TAG, "Error stopping Go core", e)
+                }
+                stopThread.start()
+                stopThread.join(5000L)
+                if (stopThread.isAlive) {
+                    VpnManager.appendLog("Go core stop timed out, proceeding anyway")
+                } else {
+                    VpnManager.appendLog("Go core stopped successfully")
                 }
 
-                // Close TUN interface
-                runCatching { vpnInterface?.close() }
+                // Close TUN fd AFTER Go core stops to avoid EBADF in goroutines.
+                VpnManager.appendLog("Closing TUN interface...")
+                val iface = vpnInterface
                 vpnInterface = null
+                runCatching { iface?.close() }
 
                 // Cancel coroutines
+                VpnManager.appendLog("Stopping Android session jobs...")
                 goClientJob?.cancel()
                 httpProxyJob?.cancel()
                 sharingSocksJob?.cancel()
@@ -467,9 +476,12 @@ class GooseRelayVpnService : VpnService() {
                 runCatching { stopSelf() }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in stopVpn", e)
-            } finally {
-                isStopping = false
+                VpnManager.updateState(VpnManager.VpnState.DISCONNECTED)
+                VpnManager.stopTrafficMonitor()
+                runCatching { stopSelf() }
             }
+            // NOTE: isStopping intentionally stays true until onDestroy() completes.
+            // This prevents onDestroy() from double-closing already-freed resources.
         }
     }
 
@@ -490,20 +502,26 @@ class GooseRelayVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        // Normal path: stopVpn() already ran — Go layer guards make re-calls no-ops.
+        // Force-kill path: stopVpn() was never called, so do full cleanup.
         if (!isStopping) {
-            try {
-                if (mobile.Mobile.isRunning()) {
-                    mobile.Mobile.stopClient()
-                }
-            } catch (_: Exception) {
-            }
+            // stopClient() internally handles StopTun + StopTunBridge + cancel
+            // with idempotent guards and panic recovery.
+            try { mobile.Mobile.stopClient() } catch (_: Exception) {}
             try {
                 vpnInterface?.close()
-            } catch (_: Exception) {
-            }
+            } catch (_: Exception) {}
             vpnInterface = null
         }
+        networkCallback?.let {
+            runCatching {
+                val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                cm.unregisterNetworkCallback(it)
+            }
+            networkCallback = null
+        }
         releaseWakeLock()
+        isStopping = false
         serviceScope.cancel()
         super.onDestroy()
     }

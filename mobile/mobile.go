@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/kianmhz/GooseRelayVPN/mobile/tun"
@@ -22,11 +23,13 @@ import (
 )
 
 var (
-	mu        sync.Mutex
-	cancelFn  context.CancelFunc
-	socksLn   net.Listener
-	running   bool
-	tunActive bool
+	mu               sync.Mutex
+	cancelFn         context.CancelFunc
+	socksLn          net.Listener
+	running          bool
+	tunActive        bool
+	tunBridgeRunning bool
+	clientDone       chan struct{}
 )
 
 // Bandwidth holds upload and download counters.
@@ -77,8 +80,10 @@ func StartClient(configPath string, logPath string) error {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	mu.Lock()
 	cancelFn = cancel
+	clientDone = done
 	running = true
 	mu.Unlock()
 
@@ -142,26 +147,54 @@ func StartClient(configPath string, logPath string) error {
 
 	err = server.Serve(ln)
 
+	close(done)
+
 	mu.Lock()
 	running = false
 	cancelFn = nil
+	clientDone = nil
 	socksLn = nil
 	mu.Unlock()
 	return err
 }
 
+// dupFd duplicates a file descriptor so tun2socks and Android each own
+// independent copies.  When engine.Stop() internally closes the duplicated fd,
+// Android's ParcelFileDescriptor still has its original fd to close safely —
+// no double-close SIGSEGV.
+func dupFd(fd int) int {
+	dup, err := syscall.Dup(fd)
+	if err != nil {
+		return fd
+	}
+	return dup
+}
+
 func StopClient() {
+	mu.Lock()
+	cancel := cancelFn
+	done := clientDone
+	ln := socksLn
+	cancelFn = nil
+	socksLn = nil
+	mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if ln != nil {
+		_ = ln.Close()
+	}
+
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+	}
+
 	StopTun()
 	StopTunBridge()
-	mu.Lock()
-	defer mu.Unlock()
-	if cancelFn != nil {
-		cancelFn()
-	}
-	if socksLn != nil {
-		_ = socksLn.Close()
-		socksLn = nil
-	}
 }
 
 func IsRunning() bool {
@@ -171,9 +204,11 @@ func IsRunning() bool {
 }
 
 func StartTun(fd int64, proxyAddr string) {
+	safeFd := dupFd(int(fd))
+
 	key := &engine.Key{
 		Proxy:  "socks5://" + proxyAddr,
-		Device: fmt.Sprintf("fd://%d", fd),
+		Device: fmt.Sprintf("fd://%d", safeFd),
 		MTU:    1500,
 	}
 	engine.Insert(key)
@@ -186,11 +221,17 @@ func StartTun(fd int64, proxyAddr string) {
 
 func StopTun() {
 	mu.Lock()
-	defer mu.Unlock()
-	if tunActive {
-		engine.Stop()
-		tunActive = false
+	if !tunActive {
+		mu.Unlock()
+		return
 	}
+	tunActive = false
+	mu.Unlock()
+
+	func() {
+		defer func() { recover() }()
+		engine.Stop()
+	}()
 }
 
 // TUN Bridge wrapper functions (calls mobile/tun subpackage)
@@ -202,21 +243,38 @@ func StartTunBridge(tunFd int64, mtu int64, socksAddr string) error {
 		return err
 	}
 	
+	safeFd := dupFd(int(tunFd))
+
 	key := &engine.Key{
 		Proxy:  "socks5://" + proxyAddr,
-		Device: fmt.Sprintf("fd://%d", tunFd),
+		Device: fmt.Sprintf("fd://%d", safeFd),
 		MTU:    int(mtu),
 	}
 
 	engine.Insert(key)
 	engine.Start()
 	
+	mu.Lock()
+	tunBridgeRunning = true
+	mu.Unlock()
+
 	return nil
 }
 
 // StopTunBridge stops the TUN bridge
 func StopTunBridge() {
-	engine.Stop()
+	mu.Lock()
+	if !tunBridgeRunning {
+		mu.Unlock()
+		return
+	}
+	tunBridgeRunning = false
+	mu.Unlock()
+
+	func() {
+		defer func() { recover() }()
+		engine.Stop()
+	}()
 	tun.StopFakeDNSProxy()
 }
 
