@@ -57,6 +57,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.google.gson.Gson
@@ -120,6 +121,7 @@ fun ProfilesScreen(
     val context = LocalContext.current
     var showEditor by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<ProfileEntity?>(null) }
+    var profilePendingDelete by remember { mutableStateOf<ProfileEntity?>(null) }
 
     Scaffold(
         topBar = {
@@ -192,7 +194,7 @@ fun ProfilesScreen(
                             IconButton(onClick = { editing = profile; showEditor = true }) {
                                 Icon(Icons.Filled.Edit, contentDescription = "Edit")
                             }
-                            IconButton(onClick = { viewModel.deleteProfile(profile) }) {
+                            IconButton(onClick = { profilePendingDelete = profile }) {
                                 Icon(Icons.Filled.Delete, contentDescription = "Delete")
                             }
                         }
@@ -212,6 +214,36 @@ fun ProfilesScreen(
                 editing = null
             },
             onDismiss = { showEditor = false; editing = null }
+        )
+    }
+
+    profilePendingDelete?.let { profile ->
+        AlertDialog(
+            onDismissRequest = { profilePendingDelete = null },
+            title = { Text(stringResource(com.gooserelay.gooserelayvpn.R.string.profiles_delete_confirm_title)) },
+            text = {
+                Text(
+                    stringResource(
+                        com.gooserelay.gooserelayvpn.R.string.profiles_delete_confirm_message,
+                        profile.name.ifBlank { stringResource(com.gooserelay.gooserelayvpn.R.string.profiles_dialog_new_title) }
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteProfile(profile)
+                        profilePendingDelete = null
+                    }
+                ) {
+                    Text(stringResource(com.gooserelay.gooserelayvpn.R.string.profiles_delete))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { profilePendingDelete = null }) {
+                    Text(stringResource(com.gooserelay.gooserelayvpn.R.string.action_cancel))
+                }
+            }
         )
     }
 }
