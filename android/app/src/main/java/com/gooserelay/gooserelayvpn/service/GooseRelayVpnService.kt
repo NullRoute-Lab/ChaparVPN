@@ -166,7 +166,10 @@ class GooseRelayVpnService : VpnService() {
                     } catch (e: Exception) {
                         // Only log real errors, not context cancellation from Go.
                         val msg = e.message ?: ""
-                        if (!msg.contains("context canceled", ignoreCase = true)) {
+                        val isNormalShutdown = msg.contains("context canceled", ignoreCase = true) ||
+                                msg.contains("use of closed network connection", ignoreCase = true)
+                                
+                        if (!isNormalShutdown) {
                             Log.e(TAG, "Go core error", e)
                             VpnManager.appendLog("Go core error: $msg")
                             runCatching {

@@ -30,6 +30,7 @@ var (
 	tunActive        bool
 	tunBridgeRunning bool
 	clientDone       chan struct{}
+	engineMu         sync.Mutex // Protects tun2socks engine Start/Stop
 )
 
 // Bandwidth holds upload and download counters.
@@ -129,6 +130,7 @@ func StartClient(configPath string, logPath string) error {
 		mu.Lock()
 		running = false
 		cancelFn = nil
+		clientDone = nil
 		mu.Unlock()
 		return lerr
 	}
@@ -211,8 +213,11 @@ func StartTun(fd int64, proxyAddr string) {
 		Device: fmt.Sprintf("fd://%d", safeFd),
 		MTU:    1500,
 	}
+	
+	engineMu.Lock()
 	engine.Insert(key)
 	engine.Start()
+	engineMu.Unlock()
 
 	mu.Lock()
 	tunActive = true
@@ -228,6 +233,8 @@ func StopTun() {
 	tunActive = false
 	mu.Unlock()
 
+	engineMu.Lock()
+	defer engineMu.Unlock()
 	func() {
 		defer func() { recover() }()
 		engine.Stop()
@@ -251,8 +258,10 @@ func StartTunBridge(tunFd int64, mtu int64, socksAddr string) error {
 		MTU:    int(mtu),
 	}
 
+	engineMu.Lock()
 	engine.Insert(key)
 	engine.Start()
+	engineMu.Unlock()
 	
 	mu.Lock()
 	tunBridgeRunning = true
@@ -271,10 +280,13 @@ func StopTunBridge() {
 	tunBridgeRunning = false
 	mu.Unlock()
 
+	engineMu.Lock()
 	func() {
 		defer func() { recover() }()
 		engine.Stop()
 	}()
+	engineMu.Unlock()
+	
 	tun.StopFakeDNSProxy()
 }
 
