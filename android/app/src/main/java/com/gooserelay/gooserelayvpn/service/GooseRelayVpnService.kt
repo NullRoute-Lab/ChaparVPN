@@ -76,6 +76,8 @@ class GooseRelayVpnService : VpnService() {
     @Volatile
     private var activeLocalSocksPort: Int = DEFAULT_SOCKS_PORT
 
+    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "VPN Service created")
@@ -158,11 +160,21 @@ class GooseRelayVpnService : VpnService() {
                             configFile.absolutePath,
                             logFile.absolutePath
                         )
+                    } catch (_: CancellationException) {
+                        // Normal shutdown — coroutine was cancelled during disconnect.
+                        VpnManager.appendLog("Go core stopped (coroutine cancelled)")
                     } catch (e: Exception) {
-                        Log.e(TAG, "Go core error", e)
-                        VpnManager.appendLog("Go core error: ${e.message}")
-                        withContext(Dispatchers.Main) {
-                            VpnManager.setError("Go core error: ${e.message}")
+                        // Only log real errors, not context cancellation from Go.
+                        val msg = e.message ?: ""
+                        val isNormalShutdown = msg.contains("context canceled", ignoreCase = true) ||
+                                msg.contains("use of closed network connection", ignoreCase = true)
+                                
+                        if (!isNormalShutdown) {
+                            Log.e(TAG, "Go core error", e)
+                            VpnManager.appendLog("Go core error: $msg")
+                            runCatching {
+                                VpnManager.setError("Go core error: $msg")
+                            }
                         }
                     }
                 }
@@ -238,7 +250,18 @@ class GooseRelayVpnService : VpnService() {
                     builder.addAddress("10.0.0.2", 32)
                 }
                 
-                    .addRoute("0.0.0.0", 0)
+                builder.addRoute("0.0.0.0", 0)
+
+                // Prevent IPv6 DNS leaks: if we don't route IPv6 and provide an IPv6 DNS,
+                // Android may leak DNS requests to the cellular network's IPv6 DNS server,
+                // resulting in hijacked IPs like 10.10.34.36 from the ISP.
+                try {
+                    builder.addAddress("fc00::1", 128)
+                    builder.addRoute("::", 0)
+                } catch (e: Exception) {
+                    VpnManager.appendLog("IPv6 routing skipped: ${e.message}")
+                }
+
                 vpnDnsServers.forEach { builder.addDnsServer(it) }
                 VpnManager.appendLog("VPN DNS servers: ${vpnDnsServers.joinToString()}")
                 
@@ -330,6 +353,28 @@ class GooseRelayVpnService : VpnService() {
                     mobile.Mobile.startTun(vpnInterface!!.fd.toLong(), "127.0.0.1:$socksPort")
                 }
 
+                // Register Network Change detection to route TUN gracefully
+                val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                networkCallback?.let { cm.unregisterNetworkCallback(it) }
+                networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: android.net.Network) {
+                        val caps = cm.getNetworkCapabilities(network)
+                        if (caps == null || caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) return
+                        if (isStopping) return
+                        
+                        VpnManager.appendLog("Underlying network changed, updating VPN underlying network...")
+                        setUnderlyingNetworks(arrayOf(network))
+                    }
+                }
+                try {
+                    val request = android.net.NetworkRequest.Builder()
+                        .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        .build()
+                    cm.registerNetworkCallback(request, networkCallback!!)
+                } catch (e: Exception) {
+                    VpnManager.appendLog("Failed to register network callback: ${e.message}")
+                }
+
                 // Update state
                 VpnManager.updateState(VpnManager.VpnState.CONNECTED)
                 VpnManager.startTrafficMonitor(this@GooseRelayVpnService)
@@ -358,44 +403,54 @@ class GooseRelayVpnService : VpnService() {
         
         VpnManager.updateState(VpnManager.VpnState.DISCONNECTING)
         
-        serviceScope.launch(Dispatchers.IO) {
+        // Use a separate scope so that serviceScope.cancel() in onDestroy()
+        // does not kill this coroutine mid-cleanup.
+        val stopScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        stopScope.launch {
             try {
                 connectJob?.cancel()
                 VpnManager.appendLog("Stopping VPN...")
+                tunBridgeActive = false
 
-                // Stop Go TUN bridge if active
-                if (tunBridgeActive) {
-                    try {
-                        val tunClass = Class.forName("mobile.Mobile")
-                        val stopMethod = tunClass.getMethod("stopTunBridge")
-                        stopMethod.invoke(null)
-                        VpnManager.appendLog("Go TUN bridge stopped")
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error stopping TUN bridge", e)
-                    }
-                    tunBridgeActive = false
-                }
-
-                // Stop Go client and Tun bridge
-                runCatching {
-                    if (mobile.Mobile.isRunning()) {
+                // Stop everything in Go layer via a single stopClient() call.
+                // Go's StopClient() internally handles StopTun/StopTunBridge
+                // with idempotent guards and panic recovery, so this is safe.
+                val stopThread = Thread {
+                    VpnManager.appendLog("Stopping Go core...")
+                    runCatching {
                         mobile.Mobile.stopClient()
-                    } else {
-                        VpnManager.appendLog("Go core already stopped")
+                    }.onFailure { e ->
+                        VpnManager.appendLog("Go core stop error: ${e.message}")
                     }
-                }.onFailure { e ->
-                    Log.e(TAG, "Error stopping Go core", e)
+                }
+                stopThread.start()
+                stopThread.join(5000L)
+                if (stopThread.isAlive) {
+                    VpnManager.appendLog("Go core stop timed out, proceeding anyway")
+                } else {
+                    VpnManager.appendLog("Go core stopped successfully")
                 }
 
-                // Close TUN interface
-                runCatching { vpnInterface?.close() }
+                // Close TUN fd AFTER Go core stops to avoid EBADF in goroutines.
+                VpnManager.appendLog("Closing TUN interface...")
+                val iface = vpnInterface
                 vpnInterface = null
+                runCatching { iface?.close() }
 
                 // Cancel coroutines
+                VpnManager.appendLog("Stopping Android session jobs...")
                 goClientJob?.cancel()
                 httpProxyJob?.cancel()
                 sharingSocksJob?.cancel()
                 logTailJob?.cancel()
+
+                networkCallback?.let {
+                    runCatching {
+                        val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                        cm.unregisterNetworkCallback(it)
+                    }
+                    networkCallback = null
+                }
 
                 // Close sharing servers
                 runCatching { sharingSocksServer?.close() }
@@ -424,9 +479,12 @@ class GooseRelayVpnService : VpnService() {
                 runCatching { stopSelf() }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in stopVpn", e)
-            } finally {
-                isStopping = false
+                VpnManager.updateState(VpnManager.VpnState.DISCONNECTED)
+                VpnManager.stopTrafficMonitor()
+                runCatching { stopSelf() }
             }
+            // NOTE: isStopping intentionally stays true until onDestroy() completes.
+            // This prevents onDestroy() from double-closing already-freed resources.
         }
     }
 
@@ -447,20 +505,26 @@ class GooseRelayVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        // Normal path: stopVpn() already ran — Go layer guards make re-calls no-ops.
+        // Force-kill path: stopVpn() was never called, so do full cleanup.
         if (!isStopping) {
-            try {
-                if (mobile.Mobile.isRunning()) {
-                    mobile.Mobile.stopClient()
-                }
-            } catch (_: Exception) {
-            }
+            // stopClient() internally handles StopTun + StopTunBridge + cancel
+            // with idempotent guards and panic recovery.
+            try { mobile.Mobile.stopClient() } catch (_: Exception) {}
             try {
                 vpnInterface?.close()
-            } catch (_: Exception) {
-            }
+            } catch (_: Exception) {}
             vpnInterface = null
         }
+        networkCallback?.let {
+            runCatching {
+                val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                cm.unregisterNetworkCallback(it)
+            }
+            networkCallback = null
+        }
         releaseWakeLock()
+        isStopping = false
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -673,7 +737,7 @@ class GooseRelayVpnService : VpnService() {
         }
     }
 
-    private fun handleSharingSocksClient(client: java.net.Socket) {
+    private suspend fun handleSharingSocksClient(client: java.net.Socket) {
         var upstream: java.net.Socket? = null
         try {
             upstream = java.net.Socket("127.0.0.1", activeLocalSocksPort)
@@ -686,12 +750,28 @@ class GooseRelayVpnService : VpnService() {
         }
     }
 
-private suspend fun handleHttpProxyClient(client: java.net.Socket, upstreamSocksPort: Int, username: String, password: String) {
+    private fun readLineUnbuffered(input: java.io.InputStream): String? {
+        val bytes = ArrayList<Byte>()
+        while (true) {
+            val next = input.read()
+            if (next < 0) {
+                if (bytes.isEmpty()) return null
+                break
+            }
+            if (next == '\n'.code) break
+            if (next != '\r'.code) {
+                bytes.add(next.toByte())
+            }
+        }
+        return String(bytes.toByteArray(), Charsets.ISO_8859_1)
+    }
+
+    private suspend fun handleHttpProxyClient(client: java.net.Socket, upstreamSocksPort: Int, username: String, password: String) {
         try {
-            val input = client.getInputStream().bufferedReader()
+            val input = client.getInputStream()
             val output = client.getOutputStream().bufferedWriter()
 
-            val requestLine = input.readLine() ?: return
+            val requestLine = readLineUnbuffered(input) ?: return
             val parts = requestLine.split(" ")
             if (parts.size < 2) {
                 client.close()
@@ -703,7 +783,7 @@ private suspend fun handleHttpProxyClient(client: java.net.Socket, upstreamSocks
 
             var authHeader: String? = null
             while (true) {
-                val line = input.readLine() ?: break
+                val line = readLineUnbuffered(input) ?: break
                 if (line.isBlank()) break
                 val idx = line.indexOf(':')
                 if (idx <= 0) continue
@@ -745,8 +825,8 @@ private suspend fun handleHttpProxyClient(client: java.net.Socket, upstreamSocks
         runCatching { client.close() }
     }
 
-    private fun bridgeBidirectional(client: java.net.Socket, upstream: java.net.Socket) {
-        val upToClient = serviceScope.launch(Dispatchers.IO) {
+    private suspend fun bridgeBidirectional(client: java.net.Socket, upstream: java.net.Socket) = coroutineScope {
+        val upToClient = launch(Dispatchers.IO) {
             val buffer = ByteArray(8192)
             try {
                 val input = upstream.getInputStream()
@@ -763,7 +843,7 @@ private suspend fun handleHttpProxyClient(client: java.net.Socket, upstreamSocks
             }
         }
 
-        val clientToUp = serviceScope.launch(Dispatchers.IO) {
+        val clientToUp = launch(Dispatchers.IO) {
             val buffer = ByteArray(8192)
             try {
                 val input = client.getInputStream()
@@ -780,9 +860,7 @@ private suspend fun handleHttpProxyClient(client: java.net.Socket, upstreamSocks
             }
         }
 
-        runBlocking {
-            joinAll(upToClient, clientToUp)
-        }
+        joinAll(upToClient, clientToUp)
         runCatching { upstream.close() }
         runCatching { client.close() }
     }
