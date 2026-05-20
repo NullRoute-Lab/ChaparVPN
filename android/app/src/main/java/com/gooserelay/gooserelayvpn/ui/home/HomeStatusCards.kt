@@ -62,25 +62,38 @@ fun MdvConnectionTelemetryCard(
                         color = MdvColor.PrimaryDim,
                         fontWeight = FontWeight.Bold
                     )
-                    androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(2.dp))
-                    val statusText = when (vpnState) {
-                        VpnManager.VpnState.CONNECTED -> stringResource(R.string.home_connection_running)
-                        VpnManager.VpnState.CONNECTING -> stringResource(R.string.home_connection_preparing)
-                        VpnManager.VpnState.DISCONNECTING -> stringResource(R.string.home_state_disconnecting)
-                        VpnManager.VpnState.ERROR -> stringResource(R.string.home_connection_error_check_logs)
-                        else -> stringResource(R.string.home_state_disconnected)
+                    if (vpnState == VpnManager.VpnState.CONNECTING) {
+                        Text(
+                            text = stringResource(R.string.home_connection_preparing),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MdvColor.OnSurface,
+                            fontWeight = FontWeight.Bold
+                        )
+                        androidx.compose.foundation.layout.Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = stringResource(R.string.home_connection_cancel_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MdvColor.OnSurfaceVariant
+                        )
+                    } else {
+                        val statusText = when (vpnState) {
+                            VpnManager.VpnState.CONNECTED -> stringResource(R.string.home_connection_running)
+                            VpnManager.VpnState.DISCONNECTING -> stringResource(R.string.home_state_disconnecting)
+                            VpnManager.VpnState.ERROR -> stringResource(R.string.home_connection_error_check_logs)
+                            else -> stringResource(R.string.home_state_disconnected)
+                        }
+                        val statusColor = when (vpnState) {
+                            VpnManager.VpnState.CONNECTED -> ConnectedGreen
+                            VpnManager.VpnState.ERROR -> DisconnectedRed
+                            else -> MdvColor.OnSurface
+                        }
+                        Text(
+                            text = statusText,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = statusColor,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
-                    val statusColor = when (vpnState) {
-                        VpnManager.VpnState.CONNECTED -> ConnectedGreen
-                        VpnManager.VpnState.ERROR -> DisconnectedRed
-                        else -> MdvColor.OnSurface
-                    }
-                    Text(
-                        text = statusText,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = statusColor,
-                        fontWeight = FontWeight.Bold
-                    )
                 }
 
                 if (connectedDurationSeconds > 0 ||
