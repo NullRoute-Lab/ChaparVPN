@@ -197,7 +197,30 @@ class GooseRelayVpnService : VpnService() {
                 }
 
                 if (proxyMode) {
-                    VpnManager.appendLog("Proxy mode active: skipping Android VpnService TUN setup")
+                    VpnManager.appendLog("Proxy mode active: establishing dummy VPN interface to prevent background freezing")
+                    try {
+                        val builder = Builder()
+                            .setSession(getString(R.string.app_name) + " (Proxy)")
+                            .setMtu(1500)
+                            .setBlocking(false)
+                            .setUnderlyingNetworks(null)
+                        
+                        // Add a local dummy IP address to avoid routing loop and not hijack any traffic.
+                        builder.addAddress("10.255.255.1", 32)
+                        // Add a route only to the dummy address itself so no device traffic gets intercepted.
+                        builder.addRoute("10.255.255.1", 32)
+                        
+                        vpnInterface = builder.establish()
+                        if (vpnInterface != null) {
+                            VpnManager.appendLog("Dummy TUN interface established (fd=${vpnInterface!!.fd}) for Proxy Mode")
+                        } else {
+                            VpnManager.appendLog("Warning: Could not establish dummy TUN interface, proxy mode will run without it")
+                        }
+                    } catch (e: Exception) {
+                        VpnManager.appendLog("Failed to establish dummy TUN interface: ${e.message}")
+                        Log.e(TAG, "Dummy TUN error", e)
+                    }
+
                     VpnManager.updateState(VpnManager.VpnState.CONNECTED)
                     VpnManager.startTrafficMonitor(this@GooseRelayVpnService)
                     val notification = buildNotification("Proxy mode active on port $socksPort")
