@@ -2,7 +2,6 @@ package com.gooserelay.gooserelayvpn.util
 
 import android.content.Context
 import android.content.Intent
-import android.net.TrafficStats
 import com.gooserelay.gooserelayvpn.data.local.ProfileEntity
 import com.gooserelay.gooserelayvpn.service.GooseRelayVpnService
 import kotlinx.coroutines.CoroutineScope
@@ -170,12 +169,11 @@ object VpnManager {
     }
 
     fun startTrafficMonitor(context: Context) {
-        val appContext = context.applicationContext
-        val uid = appContext.applicationInfo.uid
         trafficMonitorJob?.cancel()
         trafficMonitorJob = monitorScope.launch {
-            var prevTx = TrafficStats.getUidTxBytes(uid).coerceAtLeast(0L)
-            var prevRx = TrafficStats.getUidRxBytes(uid).coerceAtLeast(0L)
+            var bandwidth = mobile.Mobile.getTunBandwidth()
+            var prevTx = bandwidth?.up ?: 0L
+            var prevRx = bandwidth?.down ?: 0L
             var prevTime = System.currentTimeMillis()
             val startedAt = prevTime
             _uploadTotalBytes.value = 0L
@@ -184,8 +182,9 @@ object VpnManager {
             while (isActive) {
                 delay(1000L)
                 val now = System.currentTimeMillis()
-                val tx = TrafficStats.getUidTxBytes(uid).coerceAtLeast(0L)
-                val rx = TrafficStats.getUidRxBytes(uid).coerceAtLeast(0L)
+                bandwidth = mobile.Mobile.getTunBandwidth()
+                val tx = bandwidth?.up ?: 0L
+                val rx = bandwidth?.down ?: 0L
                 val dt = (now - prevTime).coerceAtLeast(1L)
                 val uploadDelta = (tx - prevTx).coerceAtLeast(0L)
                 val downloadDelta = (rx - prevRx).coerceAtLeast(0L)

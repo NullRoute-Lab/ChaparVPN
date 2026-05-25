@@ -33,3 +33,5 @@ deploy.sh
 /bench/results/*.json
 /bench/.head_bin/
 /bench/.worktrees/
+android/app/build/
+android/.gradle/

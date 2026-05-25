@@ -17,7 +17,7 @@ data class ProfileEntity(
     val scriptKeysText: String = "",
     val tunnelKey: String = "",
     val coalesceStepMs: Int = 0,
-    val idleSlotsPerBucket: Int = 1,
+    val idleSlotsPerBucket: Int = 2,
     val isSelected: Boolean = false,
     val createdAt: Long = System.currentTimeMillis()
 )

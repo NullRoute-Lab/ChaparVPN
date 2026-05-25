@@ -338,7 +338,7 @@ private fun ProfileEditorDialog(
             scriptKeyEntries = parseScriptKeysText(keys)
             Log.d("ProfilesScreen", "After parsing, scriptKeyEntries has ${scriptKeyEntries.size} items")
             coalesceStepMs = (root.get("coalesce_step_ms")?.asInt ?: 0).toString()
-            idleSlotsPerBucket = (root.get("idle_slots_per_bucket")?.asInt?.coerceIn(1, 3) ?: 1).toString()
+            idleSlotsPerBucket = (root.get("idle_slots_per_bucket")?.asInt?.coerceIn(1, 3) ?: 2).toString()
             tunnelKey = root.get("tunnel_key")?.asString ?: tunnelKey
         }
     }

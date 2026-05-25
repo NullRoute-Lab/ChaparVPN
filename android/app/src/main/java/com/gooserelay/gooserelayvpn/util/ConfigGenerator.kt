@@ -26,7 +26,7 @@ object ConfigGenerator {
             addProperty("idle_timeout_ms", 3000)
             addProperty("sleep_step_ms", 3000)
             addProperty("coalesce_step_ms", 20)
-            addProperty("idle_slots_per_bucket", 1)
+            addProperty("idle_slots_per_bucket", 2)
             addProperty("jitter_min_ms", 5)
             addProperty("jitter_max_ms", 15)
             addProperty("max_global_workers", 0)

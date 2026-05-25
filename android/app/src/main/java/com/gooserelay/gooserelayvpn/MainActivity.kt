@@ -126,7 +126,7 @@ class MainActivity : ComponentActivity() {
             val scriptKeysText = parseScriptKeysJson(root.get("script_keys"))
             val tunnelKey = root.get("tunnel_key")?.asString ?: ""
             val coalesceStepMs = root.get("coalesce_step_ms")?.asInt ?: 0
-            val idleSlotsPerBucket = root.get("idle_slots_per_bucket")?.asInt?.coerceIn(1, 3) ?: 1
+            val idleSlotsPerBucket = root.get("idle_slots_per_bucket")?.asInt?.coerceIn(1, 3) ?: 2
 
             ProfileEntity(
                 name = name,

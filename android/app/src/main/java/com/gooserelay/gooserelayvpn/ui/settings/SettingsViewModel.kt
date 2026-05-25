@@ -62,7 +62,7 @@ class SettingsViewModel @Inject constructor(
                 }.filter { it.isNotBlank() }.joinToString("\n")
             } else profile.scriptKeysText
             val coalesceStepMs = root.get("coalesce_step_ms")?.asInt ?: 0
-            val idleSlotsPerBucket = root.get("idle_slots_per_bucket")?.asInt?.coerceIn(1, 3) ?: 1
+            val idleSlotsPerBucket = root.get("idle_slots_per_bucket")?.asInt?.coerceIn(1, 3) ?: 2
 
             profile.copy(
                 debugTiming = root.get("debug_timing")?.asBoolean ?: profile.debugTiming,
