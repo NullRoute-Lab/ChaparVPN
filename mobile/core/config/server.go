@@ -15,10 +15,16 @@ import (
 
 // Server is the VPS exit server config.
 type Server struct {
-	ListenAddr    string
-	AESKeyHex     string
-	DebugTiming   bool
-	UpstreamProxy string // optional socks5://host:port; when set, all outbound dials go through this proxy
+	ListenAddr                    string
+	AESKeyHex                     string
+	DebugTiming                   bool
+	UpstreamProxy                 string // optional socks5://host:port; when set, all outbound dials go through this proxy
+	CompressionEntropyThreshold   int
+	InitialResponseBytesPreEncode int
+
+	AdminUUIDs         []string
+	MaxSessionsPerUUID int
+	AdminAPIAddr       string
 }
 
 type serverFile struct {
@@ -26,6 +32,11 @@ type serverFile struct {
 	ServerHost string `json:"server_host"`
 	ServerPort int    `json:"server_port"`
 	TunnelKey  string `json:"tunnel_key"`
+
+	// Accounting / Multi-tenant
+	AdminUUIDs         []string `json:"admin_uuids"`
+	MaxSessionsPerUUID int      `json:"max_sessions_per_uuid"`
+	AdminAPIAddr       string   `json:"admin_api_addr"`
 
 	// Optional: when true, log per-session dial breakdown (DNS, TCP, first
 	// upstream read) so an operator can pinpoint where latency is going.
@@ -35,6 +46,12 @@ type serverFile struct {
 	// (e.g. Cloudflare WARP on socks5://127.0.0.1:40000). Useful when the VPS
 	// datacenter IP is blocked by certain sites.
 	UpstreamProxy string `json:"upstream_proxy"`
+
+	// Compression
+	CompressionEntropyThreshold int `json:"compression_entropy_threshold"`
+
+	// TTFB Optimization cap
+	InitialResponseBytesPreEncode int `json:"initial_response_bytes_pre_encode"`
 
 	// Legacy keys kept as fallback for existing deployments.
 	ListenAddr string `json:"listen_addr"`
@@ -105,11 +122,26 @@ func LoadServer(path string) (*Server, error) {
 		upstreamProxy = u.Host
 	}
 
+	compressionEntropyThreshold := f.CompressionEntropyThreshold
+	if compressionEntropyThreshold <= 0 {
+		compressionEntropyThreshold = 224
+	}
+
+	initialResponseBytesPreEncode := f.InitialResponseBytesPreEncode
+	if initialResponseBytesPreEncode <= 0 {
+		initialResponseBytesPreEncode = 512 * 1024
+	}
+
 	c := Server{
-		ListenAddr:    net.JoinHostPort(listenHost, strconv.Itoa(listenPort)),
-		AESKeyHex:     key,
-		DebugTiming:   f.DebugTiming,
-		UpstreamProxy: upstreamProxy,
+		ListenAddr:                    net.JoinHostPort(listenHost, strconv.Itoa(listenPort)),
+		AESKeyHex:                     key,
+		DebugTiming:                   f.DebugTiming,
+		UpstreamProxy:                 upstreamProxy,
+		CompressionEntropyThreshold:   compressionEntropyThreshold,
+		InitialResponseBytesPreEncode: initialResponseBytesPreEncode,
+		AdminUUIDs:                    f.AdminUUIDs,
+		MaxSessionsPerUUID:            f.MaxSessionsPerUUID,
+		AdminAPIAddr:                  f.AdminAPIAddr,
 	}
 	return &c, nil
 }

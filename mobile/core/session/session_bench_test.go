@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/nullroute-lab/gooserelayvpn-androidclient/mobile/core/frame"
+	"github.com/nullroute-lab/chaparvpn-androidclient/mobile/core/frame"
 )
 
 func benchSID(b byte) [frame.SessionIDLen]byte {

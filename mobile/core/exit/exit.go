@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -18,9 +19,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nullroute-lab/gooserelayvpn-androidclient/mobile/core/frame"
-	"github.com/nullroute-lab/gooserelayvpn-androidclient/mobile/core/protocol"
-	"github.com/nullroute-lab/gooserelayvpn-androidclient/mobile/core/session"
+	"github.com/nullroute-lab/chaparvpn-androidclient/mobile/core/frame"
+	"github.com/nullroute-lab/chaparvpn-androidclient/mobile/core/protocol"
+	"github.com/nullroute-lab/chaparvpn-androidclient/mobile/core/session"
 	"golang.org/x/net/proxy"
 )
 
@@ -116,11 +117,17 @@ const (
 
 // Config is the VPS server's configuration.
 type Config struct {
-	ListenAddr    string // "0.0.0.0:8443"
-	AESKeyHex     string // 64-char hex
-	DebugTiming   bool   // when true, log per-session dial breakdown and first-read latency
-	UpstreamProxy string // optional "host:port" of a local SOCKS5 proxy (e.g. WARP on 127.0.0.1:40000)
-	Version       string // build version string (exposed in /healthz and version probe)
+	ListenAddr                  string // "0.0.0.0:8443"
+	AESKeyHex                   string // 64-char hex
+	DebugTiming                 bool   // when true, log per-session dial breakdown and first-read latency
+	UpstreamProxy               string // optional "host:port" of a local SOCKS5 proxy (e.g. WARP on 127.0.0.1:40000)
+	Version                     string // build version string (exposed in /healthz and version probe)
+	CompressionEntropyThreshold int
+	InitialResponseBytesPreEncode int
+
+	AdminUUIDs         []string // array of user UUIDs that bypass quota
+	MaxSessionsPerUUID int      // default concurrent limit per normal user
+	AdminAPIAddr       string   // 127.0.0.1:9090 binding
 }
 
 // Server holds the per-process session state.
@@ -131,6 +138,7 @@ type Server struct {
 	dns         *dnsCache
 	debugTiming bool
 	version     string
+	accounting  *AccountingManager
 
 	mu            sync.Mutex
 	sessions      map[[frame.SessionIDLen]byte]*session.Session
@@ -179,6 +187,12 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	dialFn := dialFunc(cfg.UpstreamProxy)
+	am := NewAccountingManager(cfg.MaxSessionsPerUUID, cfg.AdminUUIDs)
+	if cfg.AdminAPIAddr != "" {
+		if err := am.StartAdminAPI(cfg.AdminAPIAddr); err != nil {
+			return nil, err
+		}
+	}
 	s := &Server{
 		cfg:           cfg,
 		aead:          aead,
@@ -186,6 +200,7 @@ func New(cfg Config) (*Server, error) {
 		dns:           newDNSCache(),
 		debugTiming:   cfg.DebugTiming,
 		version:       cfg.Version,
+		accounting:    am,
 		sessions:      make(map[[frame.SessionIDLen]byte]*session.Session),
 		sessionOwners: make(map[[frame.SessionIDLen]byte][frame.ClientIDLen]byte),
 		txReady:       make(map[[frame.SessionIDLen]byte]struct{}),
@@ -293,7 +308,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.stats.requests.Add(1)
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxResponseBytesPreEncode+1024*1024))
 	if err != nil {
 		log.Printf("[exit] read body: %v", err)
 		w.WriteHeader(http.StatusBadRequest)
@@ -308,6 +323,19 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[exit] decode batch failed: %v (likely tunnel_key mismatch — confirm client config matches this server's tunnel_key)", err)
 		w.WriteHeader(http.StatusNoContent)
 		return
+	}
+
+	ownerUUID := fmt.Sprintf("%x-%x-%x-%x-%x", clientID[0:4], clientID[4:6], clientID[6:8], clientID[8:10], clientID[10:16])
+
+	// Fast-path: strictly bypass checking and quota enforcement for admins.
+	if !s.accounting.IsAdmin(ownerUUID) {
+		if len(body) > 0 {
+			if !s.accounting.ConsumeQuota(ownerUUID, int64(len(body))) {
+				w.WriteHeader(http.StatusForbidden)
+				w.Write([]byte("QUOTA_EXHAUSTED"))
+				return
+			}
+		}
 	}
 
 	if len(rxFrames) > 0 {
@@ -347,11 +375,19 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	// the channel is not lost.
 	wakeCh := s.activityFor(clientID)
 
+		budget := s.cfg.InitialResponseBytesPreEncode
+		if budget <= 0 {
+			budget = 512 * 1024
+		}
+		if budget > maxResponseBytesPreEncode {
+			budget = maxResponseBytesPreEncode
+		}
+
 	// Active batches use a shorter wait to avoid stalling unrelated sessions,
 	// while empty polls keep long-poll behavior for push responsiveness.
 	deadline := time.Now().Add(s.drainWindow(rxFrames))
 	for {
-		txFrames, urgent := s.drainAll(clientID, maxResponseBytesPreEncode)
+			txFrames, urgent := s.drainAll(clientID, budget)
 		if len(txFrames) > 0 {
 			// Track running payload bytes so the coalesce loop respects the
 			// same response-size budget across multiple drainAll calls.
@@ -365,11 +401,11 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			// 25ms wait there compounds latency across every TLS round-trip.
 			// Urgent batches (RSTs, first downstream after SYN) skip coalesce
 			// unconditionally so connection setup is not delayed.
-			if !urgent && len(txFrames) > coalesceMinFrames && totalBytes < maxResponseBytesPreEncode {
+				if !urgent && len(txFrames) > coalesceMinFrames && totalBytes < budget {
 				coalesceDeadline := time.Now().Add(s.coalesceDuration(len(txFrames)))
 			coalesceLoop:
 				for {
-					if time.Now().After(coalesceDeadline) || totalBytes >= maxResponseBytesPreEncode {
+						if time.Now().After(coalesceDeadline) || totalBytes >= budget {
 						break coalesceLoop
 					}
 					remainingCoalesce := time.Until(coalesceDeadline)
@@ -377,7 +413,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 					case <-r.Context().Done():
 						return
 					case <-wakeCh:
-						more, _ := s.drainAll(clientID, maxResponseBytesPreEncode-totalBytes)
+							more, _ := s.drainAll(clientID, budget-totalBytes)
 						for _, f := range more {
 							totalBytes += len(f.Payload)
 						}
@@ -388,7 +424,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			respBody, err := frame.EncodeBatch(s.aead, clientID, txFrames)
+			respBody, err := frame.EncodeBatch(s.aead, clientID, txFrames, s.cfg.CompressionEntropyThreshold)
 			if err != nil {
 				log.Printf("[exit] encode response: %v", err)
 				w.WriteHeader(http.StatusInternalServerError)
@@ -398,6 +434,17 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			for _, f := range txFrames {
 				bytesOut += uint64(len(f.Payload))
 			}
+
+			// Quota enforcement for bytesOut is now handled directly inside drainAll
+			// where we correctly account for each frame pulled out of the buffers.
+			// However, if the quota check failed inside drainAll and the quota is <= 0,
+			// we must drop the connection here.
+			if !s.accounting.IsAdmin(ownerUUID) && !s.accounting.CheckQuota(ownerUUID) {
+				w.WriteHeader(http.StatusForbidden)
+				w.Write([]byte("QUOTA_EXHAUSTED"))
+				return
+			}
+
 			s.stats.framesOut.Add(uint64(len(txFrames)))
 			s.stats.bytesOut.Add(bytesOut)
 			w.Header().Set("Content-Type", "text/plain")
@@ -408,7 +455,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			// Empty response (still a valid base64-encoded zero-frame batch).
-			respBody, _ := frame.EncodeBatch(s.aead, clientID, nil)
+			respBody, _ := frame.EncodeBatch(s.aead, clientID, nil, s.cfg.CompressionEntropyThreshold)
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = w.Write(respBody)
 			return
@@ -478,9 +525,18 @@ func (s *Server) routeIncoming(f *frame.Frame, owner [frame.ClientIDLen]byte) {
 		// If it's a UDP frame, we can auto-create the session without a SYN
 		// since UDP is connectionless.
 		if f.HasFlag(frame.FlagUDP) {
+			ownerUUID := fmt.Sprintf("%x-%x-%x-%x-%x", owner[0:4], owner[4:6], owner[6:8], owner[8:10], owner[10:16])
+			if !s.accounting.IsAdmin(ownerUUID) && !s.accounting.CanStartSession(ownerUUID) {
+				s.queueRST(owner, f.SessionID)
+				s.stats.rstSent.Add(1)
+				return
+			}
 			var err error
 			sess, err = s.openUDPSession(f.SessionID, owner)
 			if err != nil {
+				if !s.accounting.IsAdmin(ownerUUID) {
+					s.accounting.EndSession(ownerUUID)
+				}
 				log.Printf("[exit] failed to open UDP session %x: %v", f.SessionID[:4], err)
 				return
 			}
@@ -500,9 +556,18 @@ func (s *Server) routeIncoming(f *frame.Frame, owner [frame.ClientIDLen]byte) {
 				s.stats.rstSent.Add(1)
 				return
 			}
+			ownerUUID := fmt.Sprintf("%x-%x-%x-%x-%x", owner[0:4], owner[4:6], owner[6:8], owner[8:10], owner[10:16])
+			if !s.accounting.IsAdmin(ownerUUID) && !s.accounting.CanStartSession(ownerUUID) {
+				s.queueRST(owner, f.SessionID)
+				s.stats.rstSent.Add(1)
+				return
+			}
 			var err error
 			sess, err = s.openSession(f.SessionID, f.Target, owner)
 			if err != nil {
+				if !s.accounting.IsAdmin(ownerUUID) {
+					s.accounting.EndSession(ownerUUID)
+				}
 				s.recordDialFailure(f.Target, err)
 				s.stats.dialsFail.Add(1)
 				log.Printf("[exit] dial %s: %v", f.Target, err)
@@ -893,8 +958,18 @@ func (s *Server) drainAll(owner [frame.ClientIDLen]byte, byteBudget int) ([]*fra
 			// client→server frames would be force-closed by the idle GC after
 			// idleSessionTimeout even though it is actively delivering data.
 			s.lastActivity[id] = time.Now()
+
+			var bytesOut int
 			for _, f := range frames {
 				remainingBytes -= len(f.Payload)
+				bytesOut += len(f.Payload)
+			}
+
+			ownerUUID := fmt.Sprintf("%x-%x-%x-%x-%x", owner[0:4], owner[4:6], owner[6:8], owner[8:10], owner[10:16])
+			if !s.accounting.IsAdmin(ownerUUID) && bytesOut > 0 {
+				if !s.accounting.ConsumeQuota(ownerUUID, int64(bytesOut)) {
+					// Connection will be dropped by handleTunnel, but we must update the state now.
+				}
 			}
 		}
 		out = append(out, frames...)
@@ -910,6 +985,12 @@ func (s *Server) gcDoneSessions() {
 		if sess.IsDone() {
 			sess.Stop()
 			delete(s.sessions, id)
+			if owner, ok := s.sessionOwners[id]; ok {
+				ownerUUID := fmt.Sprintf("%x-%x-%x-%x-%x", owner[0:4], owner[4:6], owner[6:8], owner[8:10], owner[10:16])
+				if !s.accounting.IsAdmin(ownerUUID) {
+					s.accounting.EndSession(ownerUUID)
+				}
+			}
 			delete(s.sessionOwners, id)
 			delete(s.txReady, id)
 			delete(s.firstReply, id)

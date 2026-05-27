@@ -61,10 +61,10 @@ func TestRecordScriptStatsFromBody_ParsesValidJSON(t *testing.T) {
 }
 
 func TestRecordScriptStatsFromBody_LegacyTextResponse(t *testing.T) {
-	// Old apps_script/Code.gs returns "GooseRelay forwarder OK" from doGet.
+	// Old apps_script/Code.gs returns "ChaparCore forwarder OK" from doGet.
 	// We must not panic, must not record a count, and must flag the once-log.
 	c := &Client{endpoints: []relayEndpoint{{url: "u1"}}}
-	c.recordScriptStatsFromBody(0, "u1", []byte("GooseRelay forwarder OK"))
+	c.recordScriptStatsFromBody(0, "u1", []byte("ChaparCore forwarder OK"))
 	if !c.endpoints[0].scriptCountAt.IsZero() {
 		t.Fatalf("scriptCountAt should remain zero on a non-JSON body")
 	}
@@ -122,7 +122,7 @@ func TestRecordScriptStatsFromBody_RecoveryAfterRedeploy(t *testing.T) {
 	// next poll returns JSON. We should record the count AND clear the
 	// once-flag so a future regression would log a fresh warning.
 	c := &Client{endpoints: []relayEndpoint{{url: "u1"}}}
-	c.recordScriptStatsFromBody(0, "u1", []byte("GooseRelay forwarder OK"))
+	c.recordScriptStatsFromBody(0, "u1", []byte("ChaparCore forwarder OK"))
 	if !c.endpoints[0].scriptStatsErrLogged {
 		t.Fatalf("first call should set scriptStatsErrLogged")
 	}

@@ -23,9 +23,9 @@ gomobile bind \
   -v \
   -target=android/arm64,android/arm,android/amd64,android/386 \
   -androidapi 21 \
-  -o android/app/libs/gooserelayvpn.aar \
+  -o android/app/libs/chaparvpn.aar \
   ./mobile/
 
-echo "Built android/app/libs/gooserelayvpn.aar"
+echo "Built android/app/libs/chaparvpn.aar"
 
-# TUN module is now included in gooserelayvpn.aar (no separate build needed)
+# TUN module is now included in chaparvpn.aar (no separate build needed)

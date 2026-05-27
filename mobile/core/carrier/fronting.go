@@ -1,6 +1,7 @@
 package carrier
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -9,14 +10,13 @@ import (
 	"net"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
 )
 
-const frontedProbeOKBody = "GooseRelay forwarder OK"
+const frontedProbeOKBody = "ChaparCore forwarder OK"
 
 type FrontingConfig struct {
 	GoogleIP string
@@ -145,8 +145,13 @@ func validateFrontedProbeResponse(statusCode int, body []byte) error {
 	if statusCode != http.StatusOK {
 		return fmt.Errorf("unexpected probe status %d", statusCode)
 	}
-	if strings.TrimSpace(string(body)) != frontedProbeOKBody {
-		return fmt.Errorf("unexpected probe body %q", strings.TrimSpace(string(body)))
+	trimmed := bytes.TrimSpace(body)
+	if string(trimmed) == frontedProbeOKBody {
+		return nil
+	}
+	// Fallback to accepting the raw format if not explicitly the new health response
+	if !bytes.Contains(trimmed, []byte("ChaparCore")) {
+		return fmt.Errorf("unexpected probe body %q", string(trimmed))
 	}
 	return nil
 }

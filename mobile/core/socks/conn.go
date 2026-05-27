@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nullroute-lab/gooserelayvpn-androidclient/mobile/core/session"
+	"github.com/nullroute-lab/chaparvpn-androidclient/mobile/core/session"
 )
 
 // VirtualConn fulfills net.Conn by reading from session.RxChan and writing to

@@ -96,10 +96,6 @@ var (
 		buf := make([]byte, 0, 64*1024)
 		return &buf
 	}}
-	encMarshaledPool = sync.Pool{New: func() interface{} {
-		buf := make([][]byte, 0, 32)
-		return &buf
-	}}
 	// zstdEncPool and zstdDecPool are used by EncodeBatch/DecodeBatch.
 	// Pooling avoids re-initialising the encoder's internal state on every batch.
 	// SpeedFastest (level 1) is ~2× faster than DEFLATE BestSpeed and produces
@@ -130,6 +126,32 @@ const (
 	compressMinSize = 512
 )
 
+// shouldAttemptCompression evaluates the byte diversity (entropy) of the payload.
+// If the payload is highly compressed or encrypted already, it will have a very high
+// number of unique bytes. We use a threshold to intelligently skip compression.
+func shouldAttemptCompression(payload []byte, threshold int) bool {
+	var seen [256]bool
+	unique := 0
+
+	// Sample up to 4096 bytes
+	limit := len(payload)
+	if limit > 4096 {
+		limit = 4096
+	}
+
+	for i := 0; i < limit; i++ {
+		b := payload[i]
+		if !seen[b] {
+			seen[b] = true
+			unique++
+			if unique >= threshold {
+				return false // Too much entropy, skip compression
+			}
+		}
+	}
+	return true
+}
+
 // EncodeBatch packs zero or more frames into a base64-encoded HTTP body.
 //
 // Wire format (before base64):
@@ -150,39 +172,14 @@ const (
 // because the Apps Script forwarder only relays the request body — headers do
 // not survive the hop. Sealing it under AES-GCM also means a passive observer
 // of the relay traffic cannot tell two clients apart by their IDs.
-func EncodeBatch(c *Crypto, clientID [ClientIDLen]byte, frames []*Frame) ([]byte, error) {
+func EncodeBatch(c *Crypto, clientID [ClientIDLen]byte, frames []*Frame, entropyThreshold int) ([]byte, error) {
 	if len(frames) > 0xFFFF {
 		return nil, fmt.Errorf("batch: too many frames: %d", len(frames))
-	}
-
-	// Marshal all frames first so we know the exact plaintext size.
-	marshaledP := encMarshaledPool.Get().(*[][]byte)
-	marshaled := (*marshaledP)[:0]
-	defer func() {
-		for i := range marshaled {
-			marshaled[i] = nil
-		}
-		marshaled = marshaled[:0]
-		*marshaledP = marshaled
-		encMarshaledPool.Put(marshaledP)
-	}()
-
-	plainSize := 1 + ClientIDLen + 2 // flags byte + client_id + u16 frame count
-	for _, f := range frames {
-		raw, err := f.Marshal()
-		if err != nil {
-			return nil, fmt.Errorf("batch: marshal frame: %w", err)
-		}
-		marshaled = append(marshaled, raw)
-		plainSize += 4 + len(raw) // u32 length prefix + frame bytes
 	}
 
 	// Pull a plaintext scratch buffer from the pool; grow if needed.
 	plainP := encPlainPool.Get().(*[]byte)
 	plain := (*plainP)[:0]
-	if cap(plain) < plainSize {
-		plain = make([]byte, 0, plainSize)
-	}
 	defer func() {
 		// Reset and return to pool. The capacity is preserved so the next
 		// EncodeBatch reuses the same underlying allocation.
@@ -194,10 +191,23 @@ func EncodeBatch(c *Crypto, clientID [ClientIDLen]byte, frames []*Frame) ([]byte
 	plain = append(plain, 0x00) // flags placeholder at index 0
 	plain = append(plain, clientID[:]...)
 	plain = append(plain, byte(len(frames)>>8), byte(len(frames)))
-	for _, raw := range marshaled {
-		plain = append(plain,
-			byte(len(raw)>>24), byte(len(raw)>>16), byte(len(raw)>>8), byte(len(raw)))
-		plain = append(plain, raw...)
+
+	for i, f := range frames {
+		// Placeholder for u32 length
+		startIdx := len(plain)
+		plain = append(plain, 0, 0, 0, 0)
+
+		var err error
+		plain, err = f.AppendMarshal(plain)
+		if err != nil {
+			return nil, fmt.Errorf("batch: marshal frame %d: %w", i, err)
+		}
+
+		frameLen := len(plain) - startIdx - 4
+		plain[startIdx] = byte(frameLen >> 24)
+		plain[startIdx+1] = byte(frameLen >> 16)
+		plain[startIdx+2] = byte(frameLen >> 8)
+		plain[startIdx+3] = byte(frameLen)
 	}
 
 	plain = appendEntropyPadding(plain)
@@ -208,7 +218,7 @@ func EncodeBatch(c *Crypto, clientID [ClientIDLen]byte, frames []*Frame) ([]byte
 	// sent raw. If compression does not shrink the data (e.g. already-encrypted
 	// TLS payloads) we fall back to raw transparently.
 	sealInput := plain // default: raw, flags byte already 0x00
-	if len(plain)-1 >= compressMinSize {
+	if len(plain)-1 >= compressMinSize && shouldAttemptCompression(plain[1:], entropyThreshold) {
 		enc := zstdEncPool.Get().(*zstd.Encoder)
 		// EncodeAll appends compressed bytes to dst. The [:1:1] cap trick gives
 		// us a fresh backing array with the flags placeholder at [0], so the

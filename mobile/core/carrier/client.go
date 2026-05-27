@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"runtime"
 	"sort"
@@ -16,8 +18,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nullroute-lab/gooserelayvpn-androidclient/mobile/core/frame"
-	"github.com/nullroute-lab/gooserelayvpn-androidclient/mobile/core/session"
+	"github.com/nullroute-lab/chaparvpn-androidclient/mobile/core/frame"
+	"github.com/nullroute-lab/chaparvpn-androidclient/mobile/core/metrics"
+	"github.com/nullroute-lab/chaparvpn-androidclient/mobile/core/session"
 )
 
 const (
@@ -67,12 +70,18 @@ const (
 	// or tail-latency events without changing protocol behavior.
 	endpointBlacklistBaseTTL = 3 * time.Second
 	endpointBlacklistMaxTTL  = 1 * time.Hour
+
+	// Max penalty duration when offline state is caused purely by local networking errors
+	// (DNS failure, unreachable router, etc.) so we recover instantly when wifi returns.
+	localNetworkOfflineBlacklistTTL = 15 * time.Second
 )
 
 // Config bundles everything the carrier needs to talk to the relay.
 type Config struct {
 	ScriptURLs    []string // one or more full https://script.google.com/macros/s/.../exec URLs
 	ClientVersion string   // build version string for diagnostics
+
+	ClientUUID string // user identity for quota and session tracking
 
 	// ScriptAccounts is an optional parallel slice to ScriptURLs labeling each
 	// deployment with the Google account it lives under. When set, the periodic
@@ -115,11 +124,19 @@ type Config struct {
 
 	// IdleSessionTimeoutMs is the duration after which an inactive session is forcefully closed.
 	IdleSessionTimeoutMs int
+
+	// Compression
+	CompressionEntropyThreshold int
+
+	// Autotune
+	AutoTuneMinSleepMs int
+	AutoTuneMaxSleepMs int
 }
 
 type relayEndpoint struct {
 	url             string
 	account         string // optional human-readable Google account label, "" = unlabeled
+	bucket          string // computed string identifier for the concurrency bucket ("acct:..." or "url:...")
 	blacklistedTill time.Time
 	failCount       int
 	statsOK         uint64
@@ -143,13 +160,16 @@ type relayEndpoint struct {
 	// Probe-Based Quota Recovery
 	quotaExhausted bool
 	probeAllowedAt time.Time
+
+	// Fast Local Network Blackout Recovery
+	localNetworkOffline bool
 }
 
 // workersPerEndpoint is the number of concurrent poll goroutines spawned for
 // each configured script URL. Total workers = workersPerEndpoint × len(endpoints).
 // Scaling with endpoint count means adding more deployment IDs increases
 // parallelism rather than just spreading the same fixed pool thinner.
-const workersPerEndpoint = 4
+const workersPerEndpoint = 3
 
 // waker is a broadcast notifier: Broadcast() wakes all goroutines currently
 // blocked on C() simultaneously, unlike a buffered chan which only wakes one.
@@ -203,9 +223,10 @@ type Client struct {
 	inFlight map[[frame.SessionIDLen]byte]bool
 	txReady  map[[frame.SessionIDLen]byte]struct{} // sessions with pending TX frames
 
-	endpointMu   sync.Mutex
-	endpoints    []relayEndpoint
-	nextEndpoint int
+	endpointMu       sync.Mutex
+	endpoints        []relayEndpoint
+	nextEndpoint     int
+	inFlightByBucket map[string]int
 
 	idlePollMu       sync.Mutex
 	idlePollInFlight int
@@ -232,6 +253,28 @@ type Client struct {
 
 	// Atomic counter for pending bytes to trigger flush
 	pendingTxBytes atomic.Int64
+
+	// Auto-Tuning state
+	pollIdleSleep atomic.Int64 // Int64 containing time.Duration
+
+	// Recovery probe
+	recoveryProbeAddr string
+}
+
+func recoveryProbeAddress(cfg Config) string {
+	var host string
+	if cfg.Fronting.GoogleIP != "" {
+		host = cfg.Fronting.GoogleIP
+	}
+	if host == "" {
+		return ""
+	}
+	_, _, err := net.SplitHostPort(host)
+	if err != nil {
+		// likely missing port, append 443
+		return net.JoinHostPort(host, "443")
+	}
+	return host
 }
 
 // clientStats holds atomic counters surfaced periodically by statsLoop.
@@ -246,6 +289,7 @@ type clientStats struct {
 	rstFromServer atomic.Uint64
 	sessionsOpen  atomic.Uint64
 	sessionsClose atomic.Uint64
+	ttfb          *metrics.DurationWindow
 }
 
 // New constructs a Client. The HTTP client is preconfigured for domain
@@ -271,7 +315,11 @@ func New(cfg Config) (*Client, error) {
 		if i < len(cfg.ScriptAccounts) {
 			account = strings.TrimSpace(cfg.ScriptAccounts[i])
 		}
-		endpoints = append(endpoints, relayEndpoint{url: url, account: account})
+		bucket := "url:" + url
+		if account != "" {
+			bucket = "acct:" + account
+		}
+		endpoints = append(endpoints, relayEndpoint{url: url, account: account, bucket: bucket})
 	}
 	if len(endpoints) == 0 {
 		return nil, fmt.Errorf("at least one script URL is required")
@@ -295,10 +343,25 @@ func New(cfg Config) (*Client, error) {
 	bucketCount := len(accountSeen)
 
 	var clientID [frame.ClientIDLen]byte
-	if _, err := rand.Read(clientID[:]); err != nil {
-		// crypto/rand failure is unrecoverable; fail fast rather than emitting
-		// an all-zero ID that would collide with every other unupgraded client.
-		return nil, fmt.Errorf("crypto/rand: %w", err)
+	if cfg.ClientUUID != "" {
+		cleanUUID := strings.ReplaceAll(cfg.ClientUUID, "-", "")
+		if len(cleanUUID) != 32 {
+			return nil, fmt.Errorf("invalid client_uuid length: expected 32 hex chars (ignoring hyphens), got %d", len(cleanUUID))
+		}
+		decoded, err := hex.DecodeString(cleanUUID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid client_uuid format: must be hex: %w", err)
+		}
+		if len(decoded) != frame.ClientIDLen {
+			return nil, fmt.Errorf("invalid client_uuid decoded length: expected %d bytes, got %d", frame.ClientIDLen, len(decoded))
+		}
+		copy(clientID[:], decoded)
+	} else {
+		if _, err := rand.Read(clientID[:]); err != nil {
+			// crypto/rand failure is unrecoverable; fail fast rather than emitting
+			// an all-zero ID that would collide with every other unupgraded client.
+			return nil, fmt.Errorf("crypto/rand: %w", err)
+		}
 	}
 
 	idleSlotsPerBucket := cfg.IdleSlotsPerBucket
@@ -313,7 +376,7 @@ func New(cfg Config) (*Client, error) {
 	// camped — the alternative (fixed worker count) starves session
 	// establishment under TX bursts when more workers are tied to long
 	// polls.
-	numWorkers := (workersPerEndpoint + idleSlotsPerBucket - 1) * bucketCount
+	numWorkers := workersPerEndpoint * len(endpoints)
 	log.Printf("[carrier] %d worker(s) across %d account bucket(s) (%d endpoint(s)), %d idle slot(s)/bucket",
 		numWorkers, bucketCount, len(endpoints), idleSlotsPerBucket)
 	if labeled == 0 && len(endpoints) > 1 {
@@ -337,13 +400,16 @@ func New(cfg Config) (*Client, error) {
 		inFlight:           make(map[[frame.SessionIDLen]byte]bool),
 		txReady:            make(map[[frame.SessionIDLen]byte]struct{}),
 		endpoints:          endpoints,
+			inFlightByBucket:   make(map[string]int),
 		wake:               newWaker(),
 		coalesceStep:       cfg.CoalesceStep,
 		coalesceMax:        cfg.CoalesceMax,
 		flushSizeBytes:     cfg.FlushSizeKB * 1024,
+		recoveryProbeAddr:  recoveryProbeAddress(cfg),
 	}
 
 	cClient.lastActivity.Store(time.Now().UnixNano())
+		cClient.pollIdleSleep.Store(int64(10 * time.Millisecond))
 
 	maxGlobalWorkers := cfg.MaxGlobalWorkers
 	if maxGlobalWorkers <= 0 {
@@ -353,6 +419,7 @@ func New(cfg Config) (*Client, error) {
 		log.Printf("[carrier] max_global_workers configured as %d", maxGlobalWorkers)
 	}
 	cClient.globalSem = make(chan struct{}, maxGlobalWorkers)
+		cClient.stats.ttfb = metrics.NewDurationWindow(512)
 
 	return cClient, nil
 }
@@ -390,9 +457,7 @@ func (c *Client) NewSession(target string) *session.Session {
 	c.txReady[id] = struct{}{} // SYN is pending immediately on creation
 	c.mu.Unlock()
 	c.stats.sessionsOpen.Add(1)
-	if c.debugTiming {
 		c.debugStarts.Store(id, time.Now())
-	}
 	c.kick(true) // SYNs are inherently urgent (zero-delay connection setup)
 	return s
 }
@@ -420,7 +485,7 @@ func (c *Client) Shutdown(ctx context.Context) {
 	}
 	c.mu.Unlock()
 
-	body, err := frame.EncodeBatch(c.aead, c.clientID, rsts)
+	body, err := frame.EncodeBatch(c.aead, c.clientID, rsts, c.cfg.CompressionEntropyThreshold)
 	if err != nil {
 		log.Printf("[carrier] shutdown: encode failed: %v", err)
 		return
@@ -472,6 +537,19 @@ func (c *Client) Run(ctx context.Context) error {
 		defer wg.Done()
 		c.runScriptStatsLoop(ctx)
 	}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.runAutoTuneLoop(ctx)
+		}()
+	// Fast Local Network Blackout Recovery loop.
+	if c.recoveryProbeAddr != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.runEndpointRecoveryLoop(ctx)
+		}()
+	}
 	wg.Wait()
 	return ctx.Err()
 }
@@ -605,7 +683,7 @@ func (c *Client) pollOnce(ctx context.Context) bool {
 		defer func() { <-c.globalSem }()
 	}
 
-	body, err := frame.EncodeBatch(c.aead, c.clientID, frames)
+	body, err := frame.EncodeBatch(c.aead, c.clientID, frames, c.cfg.CompressionEntropyThreshold)
 	if err != nil {
 		log.Printf("[carrier] failed to prepare encrypted request batch: %v", err)
 		return false
@@ -619,148 +697,177 @@ func (c *Client) pollOnce(ctx context.Context) bool {
 	}
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		endpointIdx, scriptURL := c.pickRelayEndpoint()
-		if endpointIdx < 0 || scriptURL == "" {
-			log.Printf("[carrier] no relay script URLs are configured")
-			return false
-		}
+		shouldReturn, returnedBool := func() (bool, bool) {
+			var endpointIdx int
+			var scriptURL string
+			var idleBucket string
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, scriptURL, bytes.NewReader(body))
-		if err != nil {
-			log.Printf("[carrier] failed to build relay request: %v", err)
-			return false
-		}
-		req.Header.Set("Content-Type", "text/plain")
-		attempted = true
-
-		var pollStart time.Time
-		if c.debugTiming {
-			pollStart = time.Now()
-		}
-		resp, err := c.pickHTTPClient().Do(req)
-		if err == nil {
-			// Apps Script counts every doPost invocation, regardless of status,
-			// so bump the daily counter once we know the request reached it.
-			c.bumpDailyCount(endpointIdx)
-		}
-		if err != nil {
-			if ctx.Err() != nil {
-				return false
+			if len(frames) > 0 {
+				endpointIdx, scriptURL = c.pickRelayEndpoint()
+			} else {
+				endpointIdx, scriptURL, idleBucket = c.pickIdleEndpoint()
 			}
-			c.markEndpointFailure(endpointIdx)
-			if attempt < maxAttempts {
-				log.Printf("[carrier] relay request failed via %s (attempt %d/%d): %v; retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts, err)
-				continue
-			}
-			log.Printf("[carrier] relay request failed via %s: %v (check internet access, script_keys, and google_host)", shortScriptKey(scriptURL), err)
-			time.Sleep(time.Second) // back off on transport errors
-			return false
-		}
 
-		respBody, readErr := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if readErr != nil {
-			c.markEndpointFailure(endpointIdx)
-			if attempt < maxAttempts {
-				log.Printf("[carrier] failed to read relay response via %s (attempt %d/%d): %v; retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts, readErr)
-				continue
+			if endpointIdx < 0 || scriptURL == "" {
+				// For idle polls, this just means caps are reached. We don't log an error, just return.
+				if len(frames) == 0 {
+					return true, false
+				}
+				log.Printf("[carrier] no relay script URLs are configured")
+				return true, false
 			}
-			log.Printf("[carrier] failed to read relay response: %v", readErr)
-			return false
-		}
 
-		if resp.StatusCode == http.StatusNoContent || len(respBody) == 0 {
+			// We must release the bucket slot no matter how this attempt ends
+			defer c.releaseBucketSlot(idleBucket)
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, scriptURL, bytes.NewReader(body))
+			if err != nil {
+				log.Printf("[carrier] failed to build relay request: %v", err)
+				return true, false
+			}
+			req.Header.Set("Content-Type", "text/plain")
+			attempted = true
+
+			var pollStart time.Time
+			if c.debugTiming {
+				pollStart = time.Now()
+			}
+			resp, err := c.pickHTTPClient().Do(req)
+			if err == nil {
+				// Apps Script counts every doPost invocation, regardless of status,
+				// so bump the daily counter once we know the request reached it.
+				c.bumpDailyCount(endpointIdx)
+			}
+			if err != nil {
+				if ctx.Err() != nil {
+					return true, false
+				}
+					if isLocalNetworkOffline(err) {
+						c.markEndpointLocalNetworkFailure(endpointIdx)
+					} else {
+						c.markEndpointFailure(endpointIdx)
+					}
+				if attempt < maxAttempts {
+					log.Printf("[carrier] relay request failed via %s (attempt %d/%d): %v; retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts, err)
+					return false, false
+				}
+				log.Printf("[carrier] relay request failed via %s: %v (check internet access, script_keys, and google_host)", shortScriptKey(scriptURL), err)
+				time.Sleep(time.Second) // back off on transport errors
+				return true, false
+			}
+
+			respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRelayResponseBodyBytes))
+			_ = resp.Body.Close()
+			if readErr != nil {
+					if isLocalNetworkOffline(readErr) {
+						c.markEndpointLocalNetworkFailure(endpointIdx)
+					} else {
+						c.markEndpointFailure(endpointIdx)
+					}
+				if attempt < maxAttempts {
+					log.Printf("[carrier] failed to read relay response via %s (attempt %d/%d): %v; retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts, readErr)
+					return false, false
+				}
+				log.Printf("[carrier] failed to read relay response: %v", readErr)
+				return true, false
+			}
+
+			if resp.StatusCode == http.StatusNoContent || len(respBody) == 0 {
+				c.markEndpointSuccess(endpointIdx)
+				pollOK = true
+				countFrameBytes(&c.stats.framesOut, &c.stats.bytesOut, frames)
+				return true, len(frames) > 0
+			}
+			if resp.StatusCode != http.StatusOK {
+				switch resp.StatusCode {
+				case http.StatusForbidden: // 403
+					c.markEndpoint403(endpointIdx)
+					if attempt < maxAttempts {
+						log.Printf("[carrier] relay returned HTTP 403 via %s (attempt %d/%d); retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts)
+						return false, false
+					}
+					log.Printf("[carrier] relay returned HTTP 403 via %s (Apps Script quota exhausted or deployment not set to 'Anyone'; quota resets at midnight Pacific — consider adding more script deployments or waiting for reset)", shortScriptKey(scriptURL))
+				case http.StatusTooManyRequests: // 429
+					c.markEndpoint429(endpointIdx)
+					if attempt < maxAttempts {
+						log.Printf("[carrier] relay returned HTTP 429 (rate-limited) via %s (attempt %d/%d); retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts)
+						return false, false
+					}
+					log.Printf("[carrier] relay returned HTTP 429 (rate-limited) via %s; backing off and will retry automatically", shortScriptKey(scriptURL))
+				default:
+					c.markEndpointFailure(endpointIdx)
+					if attempt < maxAttempts {
+						log.Printf("[carrier] relay returned HTTP %d via %s (attempt %d/%d); retrying alternate script", resp.StatusCode, shortScriptKey(scriptURL), attempt, maxAttempts)
+						return false, false
+					}
+					log.Printf("[carrier] relay returned HTTP %d via %s (verify Apps Script deployment is live and access is set to Anyone)", resp.StatusCode, shortScriptKey(scriptURL))
+				}
+				return true, false
+			}
+			if len(respBody) > maxRelayResponseBodyBytes {
+				c.markEndpointFailure(endpointIdx)
+				if attempt < maxAttempts {
+					log.Printf("[carrier] relay response too large via %s (attempt %d/%d); retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts)
+					return false, false
+				}
+				log.Printf("[carrier] relay response too large via %s (%d bytes > %d); dropping batch to protect stability", shortScriptKey(scriptURL), len(respBody), maxRelayResponseBodyBytes)
+				return true, len(frames) > 0
+			}
+			if isLikelyNonBatchRelayPayload(respBody) {
+				errReason, errHard := classifyRelayErrorBody(respBody)
+				if errHard {
+					c.markEndpointHardFailure(endpointIdx)
+				} else {
+					c.markEndpointDecoyPenalty(endpointIdx)
+				}
+				if attempt < maxAttempts {
+					log.Printf("[carrier] relay returned non-batch payload via %s (attempt %d/%d); retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts)
+					return false, false
+				}
+				if errReason != "" {
+					log.Printf("[carrier] relay returned non-batch payload via %s: %s", shortScriptKey(scriptURL), errReason)
+				} else {
+					log.Printf("[carrier] relay returned non-batch payload via %s (likely HTML/JSON error page), dropping response", shortScriptKey(scriptURL))
+				}
+				return true, len(frames) > 0
+			}
+
+			_, rxFrames, decodeErr := frame.DecodeBatch(c.aead, respBody)
+			if decodeErr != nil {
+				c.markEndpointDecoyPenalty(endpointIdx)
+				if attempt < maxAttempts {
+					log.Printf("[carrier] relay response was invalid via %s (attempt %d/%d): %v; retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts, decodeErr)
+					return false, false
+				}
+				log.Printf("[carrier] relay response was invalid via %s (possibly HTML/error page instead of encrypted data): %v", shortScriptKey(scriptURL), decodeErr)
+				return true, len(frames) > 0
+			}
+
+			for _, f := range rxFrames {
+				c.routeRx(f)
+			}
 			c.markEndpointSuccess(endpointIdx)
 			pollOK = true
 			countFrameBytes(&c.stats.framesOut, &c.stats.bytesOut, frames)
-			return len(frames) > 0
-		}
-		if resp.StatusCode != http.StatusOK {
-			switch resp.StatusCode {
-			case http.StatusForbidden: // 403
-				c.markEndpoint403(endpointIdx)
-				if attempt < maxAttempts {
-					log.Printf("[carrier] relay returned HTTP 403 via %s (attempt %d/%d); retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts)
-					continue
-				}
-				log.Printf("[carrier] relay returned HTTP 403 via %s (Apps Script quota exhausted or deployment not set to 'Anyone'; quota resets at midnight Pacific — consider adding more script deployments or waiting for reset)", shortScriptKey(scriptURL))
-			case http.StatusTooManyRequests: // 429
-				c.markEndpoint429(endpointIdx)
-				if attempt < maxAttempts {
-					log.Printf("[carrier] relay returned HTTP 429 (rate-limited) via %s (attempt %d/%d); retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts)
-					continue
-				}
-				log.Printf("[carrier] relay returned HTTP 429 (rate-limited) via %s; backing off and will retry automatically", shortScriptKey(scriptURL))
-			default:
-				c.markEndpointFailure(endpointIdx)
-				if attempt < maxAttempts {
-					log.Printf("[carrier] relay returned HTTP %d via %s (attempt %d/%d); retrying alternate script", resp.StatusCode, shortScriptKey(scriptURL), attempt, maxAttempts)
-					continue
-				}
-				log.Printf("[carrier] relay returned HTTP %d via %s (verify Apps Script deployment is live and access is set to Anyone)", resp.StatusCode, shortScriptKey(scriptURL))
+			countFrameBytes(&c.stats.framesIn, &c.stats.bytesIn, rxFrames)
+			if c.debugTiming {
+				log.Printf("[timing] poll rtt=%dms tx_frames=%d rx_frames=%d resp_bytes=%d via %s",
+					time.Since(pollStart).Milliseconds(), len(frames), len(rxFrames), len(respBody), shortScriptKey(scriptURL))
 			}
-			return false
-		}
-		if len(respBody) > maxRelayResponseBodyBytes {
-			c.markEndpointFailure(endpointIdx)
-			if attempt < maxAttempts {
-				log.Printf("[carrier] relay response too large via %s (attempt %d/%d); retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts)
-				continue
-			}
-			log.Printf("[carrier] relay response too large via %s (%d bytes > %d); dropping batch to protect stability", shortScriptKey(scriptURL), len(respBody), maxRelayResponseBodyBytes)
-			return len(frames) > 0
-		}
-		if isLikelyNonBatchRelayPayload(respBody) {
-			errReason, errHard := classifyRelayErrorBody(respBody)
-			if errHard {
-				c.markEndpointHardFailure(endpointIdx)
-			} else {
-				c.markEndpointDecoyPenalty(endpointIdx)
-			}
-			if attempt < maxAttempts {
-				log.Printf("[carrier] relay returned non-batch payload via %s (attempt %d/%d); retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts)
-				continue
-			}
-			if errReason != "" {
-				log.Printf("[carrier] relay returned non-batch payload via %s: %s", shortScriptKey(scriptURL), errReason)
-			} else {
-				log.Printf("[carrier] relay returned non-batch payload via %s (likely HTML/JSON error page), dropping response", shortScriptKey(scriptURL))
-			}
-			return len(frames) > 0
-		}
 
-		_, rxFrames, decodeErr := frame.DecodeBatch(c.aead, respBody)
-		if decodeErr != nil {
-			c.markEndpointDecoyPenalty(endpointIdx)
-			if attempt < maxAttempts {
-				log.Printf("[carrier] relay response was invalid via %s (attempt %d/%d): %v; retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts, decodeErr)
-				continue
+			// Touch last activity on RX so continuous downloads don't trigger the idle timeout
+			if len(rxFrames) > 0 {
+				c.lastActivity.Store(time.Now().UnixNano())
 			}
-			log.Printf("[carrier] relay response was invalid via %s (possibly HTML/error page instead of encrypted data): %v", shortScriptKey(scriptURL), decodeErr)
-			return len(frames) > 0
-		}
 
-		for _, f := range rxFrames {
-			c.routeRx(f)
-		}
-		c.markEndpointSuccess(endpointIdx)
-		pollOK = true
-		countFrameBytes(&c.stats.framesOut, &c.stats.bytesOut, frames)
-		countFrameBytes(&c.stats.framesIn, &c.stats.bytesIn, rxFrames)
-		if c.debugTiming {
-			log.Printf("[timing] poll rtt=%dms tx_frames=%d rx_frames=%d resp_bytes=%d via %s",
-				time.Since(pollStart).Milliseconds(), len(frames), len(rxFrames), len(respBody), shortScriptKey(scriptURL))
-		}
+			return true, len(frames) > 0 || len(rxFrames) > 0
+		}()
 
-		// Touch last activity on RX so continuous downloads don't trigger the idle timeout
-		if len(rxFrames) > 0 {
-			c.lastActivity.Store(time.Now().UnixNano())
+		if shouldReturn {
+			return returnedBool
 		}
-
-		return len(frames) > 0 || len(rxFrames) > 0
 	}
-
-	return false
+return false
 }
 
 // countFrameBytes adds the count and total payload size of frames to two
@@ -788,7 +895,26 @@ func (c *Client) pickHTTPClient() *http.Client {
 	return c.httpClients[idx%uint64(len(c.httpClients))]
 }
 
+// pickRelayEndpoint selects an endpoint for active data transmission (uncapped).
 func (c *Client) pickRelayEndpoint() (int, string) {
+	return c.pickEndpointInternal(false)
+}
+
+// pickIdleEndpoint selects an endpoint for an idle long-poll. It enforces the
+// per-bucket concurrency cap using an atomic semaphore pattern.
+// Returns an empty string if all healthy endpoints have reached their cap.
+// If an endpoint is successfully picked, the caller MUST call releaseBucketSlot
+// with the returned bucket string when the poll completes.
+func (c *Client) pickIdleEndpoint() (int, string, string) {
+	idx, url := c.pickEndpointInternal(true)
+	if url == "" {
+		return -1, "", ""
+	}
+	bucket := c.endpoints[idx].bucket
+	return idx, url, bucket
+}
+
+func (c *Client) pickEndpointInternal(forIdle bool) (int, string) {
 	c.endpointMu.Lock()
 	defer c.endpointMu.Unlock()
 
@@ -798,26 +924,51 @@ func (c *Client) pickRelayEndpoint() (int, string) {
 	}
 	now := time.Now()
 	start := c.nextEndpoint % n
+
+	// First pass: try to find a healthy endpoint
 	for i := 0; i < n; i++ {
 		idx := (start + i) % n
 		ep := &c.endpoints[idx]
+
 		if ep.quotaExhausted {
 			if now.After(ep.probeAllowedAt) {
-				// Allow exactly one probe, defer next one by 5 minutes
+				// We can probe this quota-exhausted endpoint
+				if forIdle && c.inFlightByBucket[ep.bucket] >= c.idleSlotsPerBucket {
+					continue // Cap reached
+				}
 				ep.probeAllowedAt = now.Add(5 * time.Minute)
+				if forIdle {
+					c.inFlightByBucket[ep.bucket]++
+				}
 				c.nextEndpoint = (idx + 1) % n
 				return idx, ep.url
 			}
 			continue
 		}
+
 		if ep.blacklistedTill.After(now) {
 			continue
+		}
+
+		if forIdle && c.inFlightByBucket[ep.bucket] >= c.idleSlotsPerBucket {
+			continue // Cap reached
+		}
+
+		if forIdle {
+			c.inFlightByBucket[ep.bucket]++
 		}
 		c.nextEndpoint = (idx + 1) % n
 		return idx, ep.url
 	}
 
-	// All endpoints are unavailable. Pick the one that frees up soonest.
+	if forIdle {
+		// For idle polls, if no endpoint is available (either all blacklisted,
+		// quota exhausted, or capped), we just return nothing and let the worker sleep.
+		return -1, ""
+	}
+
+	// For active TX: All endpoints are unavailable (blacklisted or quota-exhausted-and-not-ready).
+	// Pick the one that frees up soonest. We don't cap active TX.
 	chosen := 0
 	soonest := c.endpoints[0].blacklistedTill
 	if c.endpoints[0].quotaExhausted && c.endpoints[0].probeAllowedAt.After(soonest) {
@@ -835,6 +986,17 @@ func (c *Client) pickRelayEndpoint() (int, string) {
 	}
 	c.nextEndpoint = (chosen + 1) % n
 	return chosen, c.endpoints[chosen].url
+}
+
+func (c *Client) releaseBucketSlot(bucket string) {
+	if bucket == "" {
+		return
+	}
+	c.endpointMu.Lock()
+	defer c.endpointMu.Unlock()
+	if c.inFlightByBucket[bucket] > 0 {
+		c.inFlightByBucket[bucket]--
+	}
 }
 
 func (c *Client) markEndpointSuccess(endpointIdx int) {
@@ -1091,13 +1253,16 @@ func (c *Client) routeRx(f *frame.Frame) {
 	if !ok {
 		return // unknown session - drop
 	}
-	if c.debugTiming && len(f.Payload) > 0 {
+		if len(f.Payload) > 0 {
 		// First downstream frame for a session implies time-to-first-byte.
 		// LoadAndDelete ensures we log this exactly once per session.
 		if start, loaded := c.debugStarts.LoadAndDelete(f.SessionID); loaded {
 			ttfb := time.Since(start.(time.Time))
-			log.Printf("[timing] %x ttfb=%dms target=%s",
-				f.SessionID[:4], ttfb.Milliseconds(), s.Target)
+				c.stats.ttfb.Add(ttfb)
+				if c.debugTiming {
+					log.Printf("[timing] %x ttfb=%dms target=%s",
+						f.SessionID[:4], ttfb.Milliseconds(), s.Target)
+				}
 		}
 	}
 	if f.HasFlag(frame.FlagRST) {
@@ -1242,6 +1407,10 @@ func isLikelyNonBatchRelayPayload(body []byte) bool {
 	if t[0] == '{' || t[0] == '[' || bytes.HasPrefix(t, []byte("HTTP/")) {
 		return true
 	}
+		// Legacy script error sentinels
+		if bytes.HasPrefix(l, []byte("exception:")) || bytes.HasPrefix(l, []byte("upstream fetch error:")) || bytes.HasPrefix(l, []byte("upstream status ")) {
+			return true
+		}
 	return false
 }
 
@@ -1348,6 +1517,18 @@ func classifyRelayErrorBody(body []byte) (reason string, hard bool) {
 		}
 	}
 
+	// ── Legacy script sentinels ────────────────────────────────────────────
+	legacyPatterns := []string{
+		"exception:",
+		"upstream fetch error:",
+		"upstream status ",
+	}
+	for _, p := range legacyPatterns {
+		if strings.Contains(lower, p) {
+			return "Legacy Apps Script error — your Code.gs needs to be redeployed. It returned naked strings instead of JSON", true
+		}
+	}
+
 	return "", false
 }
 
@@ -1379,4 +1560,107 @@ func cryptoRandDuration(min, maxDuration time.Duration) time.Duration {
 		return min
 	}
 	return min + time.Duration(n.Int64())
+}
+
+// isLocalNetworkOffline identifies errors indicating the client device has
+// lost internet access (e.g., wifi drop, airplane mode) versus the relay
+// itself failing.
+func isLocalNetworkOffline(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "network is unreachable") ||
+		strings.Contains(msg, "no route to host") ||
+		strings.Contains(msg, "connection refused")
+}
+
+// runEndpointRecoveryLoop polls a lightweight TCP endpoint when the local
+// network has been marked offline, instantly unblacklisting endpoints the
+// moment connectivity returns so we don't wait out a 15-second penalty box
+// just because the user toggled WiFi.
+func (c *Client) runEndpointRecoveryLoop(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.endpointMu.Lock()
+			hasOffline := false
+			for i := range c.endpoints {
+				if c.endpoints[i].localNetworkOffline {
+					hasOffline = true
+					break
+				}
+			}
+			c.endpointMu.Unlock()
+
+			if !hasOffline {
+				continue
+			}
+
+			if c.runEndpointRecoveryProbeOnce(ctx) {
+				// Connectivity returned! Clear all offline flags and backoffs.
+				c.endpointMu.Lock()
+				cleared := 0
+				for i := range c.endpoints {
+					if c.endpoints[i].localNetworkOffline {
+						c.endpoints[i].localNetworkOffline = false
+						c.endpoints[i].blacklistedTill = time.Time{}
+						c.endpoints[i].failCount = 0
+						cleared++
+					}
+				}
+				c.endpointMu.Unlock()
+				if cleared > 0 {
+					log.Printf("[carrier] local network recovered, cleared offline backoffs for %d endpoint(s)", cleared)
+					c.wake.Broadcast()
+				}
+			}
+		}
+	}
+}
+
+// runEndpointRecoveryProbeOnce dials the user-configured IP via TCP to test
+// if the local network can route to the internet. Uses a fast timeout.
+func (c *Client) runEndpointRecoveryProbeOnce(ctx context.Context) bool {
+	dialCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	var d net.Dialer
+	conn, err := d.DialContext(dialCtx, "tcp", c.recoveryProbeAddr)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// markEndpointLocalNetworkFailure marks the endpoint as offline due to local
+// network failure and applies a shortened blacklist TTL.
+func (c *Client) markEndpointLocalNetworkFailure(endpointIdx int) {
+	c.endpointMu.Lock()
+	if endpointIdx < 0 || endpointIdx >= len(c.endpoints) {
+		c.endpointMu.Unlock()
+		return
+	}
+	ep := &c.endpoints[endpointIdx]
+	wasHealthy := ep.failCount == 0
+
+	ep.localNetworkOffline = true
+	ep.failCount++
+	ep.statsFail++
+
+	// Force exactly the local network TTL
+	ep.blacklistedTill = time.Now().Add(localNetworkOfflineBlacklistTTL)
+	url := ep.url
+	c.endpointMu.Unlock()
+
+	if wasHealthy {
+		log.Printf("[carrier] endpoint %s blacklisted for %s (Local Network Offline)", shortScriptKey(url), localNetworkOfflineBlacklistTTL)
+	}
 }
