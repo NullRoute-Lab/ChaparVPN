@@ -38,19 +38,16 @@ func (c *Client) logStats() {
 	endpointDetail := c.endpointStatsLine()
 	accountSummary := c.accountStatsLine()
 
-	log.Printf("[stats] active=%d sessions=%d/%d frames=%d/%d bytes=%s/%s polls=%d/%d rst=%d endpoints=%d/%d",
-		active,
-		c.stats.sessionsOpen.Load(), c.stats.sessionsClose.Load(),
-		c.stats.framesOut.Load(), c.stats.framesIn.Load(),
-		humanBytes(c.stats.bytesOut.Load()), humanBytes(c.stats.bytesIn.Load()),
-		c.stats.pollsOK.Load(), c.stats.pollsFail.Load(),
-		c.stats.rstFromServer.Load(),
-		healthy, total,
-	)
-	log.Printf("[stats] endpoints: %s", endpointDetail)
+	log.Printf("[stats] ┌─────────────────────────── STATS ───────────────────────────┐")
+	log.Printf("[stats] │ Tunnel State : %-4d Active Sessions │ %d/%d (Open/Closed) │", active, c.stats.sessionsOpen.Load(), c.stats.sessionsClose.Load())
+	log.Printf("[stats] │ Traffic Flow : %-4d/%-4d (Frames In/Out) │ %s/%s (Bytes In/Out) │", c.stats.framesIn.Load(), c.stats.framesOut.Load(), humanBytes(c.stats.bytesIn.Load()), humanBytes(c.stats.bytesOut.Load()))
+	log.Printf("[stats] │ Net Health   : %-4d/%-4d (Polls OK/Fail) │ %-4d Server RST │ %d/%d (EP OK/Total) │", c.stats.pollsOK.Load(), c.stats.pollsFail.Load(), c.stats.rstFromServer.Load(), healthy, total)
+	log.Printf("[stats] ├─────────────────────────────────────────────────────────────┤")
+	log.Printf("[stats] │ %s", endpointDetail)
 	if accountSummary != "" {
-		log.Printf("[stats] %s", strings.TrimSpace(accountSummary))
+		log.Printf("[stats] │ %s", strings.TrimSpace(accountSummary))
 	}
+	log.Printf("[stats] └─────────────────────────────────────────────────────────────┘")
 }
 
 func (c *Client) endpointHealthCounts() (healthy, total int) {

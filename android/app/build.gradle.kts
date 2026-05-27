@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "com.gooserelay.gooserelayvpn"
+    namespace = "com.chapar.vpn"
     compileSdk = 36
     val appVersionName = System.getenv("ANDROID_VERSION_NAME")
         ?.takeIf { it.isNotBlank() }
@@ -17,7 +17,7 @@ android {
         ?: 1
 
     defaultConfig {
-        applicationId = "com.gooserelay.gooserelayvpn"
+        applicationId = "com.chapar.vpn"
         minSdk = 21
         targetSdk = 36
         versionCode = appVersionCode

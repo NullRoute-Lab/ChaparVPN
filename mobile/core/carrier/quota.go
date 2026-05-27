@@ -181,7 +181,7 @@ func (c *Client) recordScriptStatsFromBody(idx int, url string, body []byte) {
 	trimmed := bytes.TrimSpace(body)
 	if err := json.Unmarshal(trimmed, &stats); err != nil || !stats.OK {
 		// Most likely the deployed Code.gs is the legacy version whose doGet
-		// returns plain text "GooseRelay forwarder OK". Log once per endpoint
+		// returns plain text "ChaparCore forwarder OK". Log once per endpoint
 		// so the operator knows to redeploy, then stay quiet.
 		c.logScriptStatsParseErrorOnce(idx, url, trimmed)
 		return

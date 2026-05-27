@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nullroute-lab/gooserelayvpn-androidclient/mobile/core/frame"
+	"github.com/nullroute-lab/chaparvpn-androidclient/mobile/core/frame"
 )
 
 func sid(b byte) [frame.SessionIDLen]byte {

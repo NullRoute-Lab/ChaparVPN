@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">GooseRelayVPN-HN</string>
+    <string name="app_name">ChaparVPN-HN</string>
     <string name="settings_title">Settings</string>
     <string name="profile_settings_title">Profile Settings</string>
     <string name="action_save">Save</string>
@@ -44,7 +44,7 @@
     <string name="title_home">Home</string>
     <string name="home_network_status">NETWORK STATUS</string>
     <string name="home_no_profile_selected">No profile selected</string>
-    <string name="home_brand_short">GooseRelay-HN</string>
+    <string name="home_brand_short">Chapar-HN</string>
     <string name="home_open_info">Open info page</string>
     <string name="home_state_connected">Connected</string>
     <string name="home_state_connecting">Connecting...</string>
@@ -93,7 +93,7 @@
     <string name="profiles_large_script_keys_desc">To avoid UI lag, tap Edit to open the text box.</string>
     <string name="profiles_edit_script_keys">Edit Script Keys</string>
     <string name="profiles_script_keys_label">Script Keys (one per line)</string>
-    <string name="profiles_invalid_json_msg">Invalid JSON: required GooseRelay fields not found</string>
+    <string name="profiles_invalid_json_msg">Invalid JSON: required Chapar fields not found</string>
     <string name="profiles_json_imported_msg">JSON imported into profile form</string>
     <string name="profiles_json_empty_msg">JSON file is empty</string>
     <string name="profiles_json_imported_saved_msg">Profile imported from JSON form</string>
@@ -103,7 +103,7 @@
     <string name="logs_clear">Clear Logs</string>
     <string name="logs_auto_on">Auto ON</string>
     <string name="logs_auto_off">Auto OFF</string>
-    <string name="logs_share_subject">GooseRelayVPN-HN Logs</string>
+    <string name="logs_share_subject">ChaparVPN-HN Logs</string>
     <string name="logs_share_chooser">Share Logs</string>
     <string name="logs_filter_all">All</string>
     <string name="logs_filter_core">Core</string>
@@ -126,12 +126,12 @@
     <string name="global_username">Username</string>
     <string name="global_password">Password</string>
     <string name="global_sharing_help">Use these endpoints to share your VPN connection with other devices or apps on the same network.</string>
-    <string name="info_app_name_title">GooseRelayVPN</string>
+    <string name="info_app_name_title">ChaparVPN</string>
     <string name="info_overview_subtitle">Project overview and build details</string>
     <string name="info_build_information">Build Information</string>
     <string name="info_project_links">Project Links</string>
     <string name="info_main_github">Main GitHub</string>
-    <string name="info_android_client">GooseRelay Android Client</string>
+    <string name="info_android_client">Chapar Android Client</string>
     <string name="info_version_info">Version Info</string>
     <string name="info_app_version">App Version</string>
     <string name="info_upstream_engine">Upstream Engine</string>
@@ -141,7 +141,7 @@
     <string name="notification_connected">VPN is connected</string>
     <string name="notification_connecting">Connecting…</string>
     <string name="notification_disconnected">VPN disconnected</string>
-    <string name="project_main_github">https://github.com/Kianmhz/GooseRelayVPN</string>
-    <string name="project_android_client_github">https://github.com/Hidden-Node/GooseRelayVPN-AndroidClient</string>
+    <string name="project_main_github">https://github.com/Kianmhz/ChaparVPN</string>
+    <string name="project_android_client_github">https://github.com/Hidden-Node/ChaparVPN-AndroidClient</string>
     <string name="engine_version">v1.6.0</string>
 </resources>

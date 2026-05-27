@@ -44,30 +44,35 @@ func (f *Frame) HasFlag(flag uint8) bool { return f.Flags&flag != 0 }
 //	target      : N bytes
 //	payload_len : uint32 BE
 //	payload     : N bytes
-func (f *Frame) Marshal() ([]byte, error) {
+// AppendMarshal serializes the frame and appends it to dst, returning the updated slice.
+// This is the zero-allocation path used for batching.
+func (f *Frame) AppendMarshal(dst []byte) ([]byte, error) {
 	if len(f.Target) > maxTargetLen {
 		return nil, fmt.Errorf("target too long: %d > %d", len(f.Target), maxTargetLen)
 	}
 	if len(f.Payload) > maxPayloadSize {
 		return nil, fmt.Errorf("payload too large: %d", len(f.Payload))
 	}
-	size := SessionIDLen + 8 + 1 + 1 + len(f.Target) + 4 + len(f.Payload)
-	out := make([]byte, size)
-	off := 0
-	copy(out[off:], f.SessionID[:])
-	off += SessionIDLen
-	binary.BigEndian.PutUint64(out[off:], f.Seq)
-	off += 8
-	out[off] = f.Flags
-	off++
-	out[off] = uint8(len(f.Target))
-	off++
-	copy(out[off:], f.Target)
-	off += len(f.Target)
-	binary.BigEndian.PutUint32(out[off:], uint32(len(f.Payload)))
-	off += 4
-	copy(out[off:], f.Payload)
-	return out, nil
+	dst = append(dst, f.SessionID[:]...)
+
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], f.Seq)
+	dst = append(dst, buf[:]...)
+
+	dst = append(dst, f.Flags)
+	dst = append(dst, uint8(len(f.Target)))
+	dst = append(dst, f.Target...)
+
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(f.Payload)))
+	dst = append(dst, buf[:4]...)
+
+	dst = append(dst, f.Payload...)
+
+	return dst, nil
+}
+
+func (f *Frame) Marshal() ([]byte, error) {
+	return f.AppendMarshal(nil)
 }
 
 // Unmarshal parses a frame produced by Marshal. Returns the number of bytes

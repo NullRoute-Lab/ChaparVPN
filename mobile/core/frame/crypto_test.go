@@ -79,7 +79,7 @@ func TestEncodeDecodeBatch_RoundTrip(t *testing.T) {
 		{SessionID: sid(2), Seq: 0, Flags: FlagACK},
 	}
 	wantClient := [ClientIDLen]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	body, err := EncodeBatch(c, wantClient, in)
+	body, err := EncodeBatch(c, wantClient, in, 224)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -125,7 +125,7 @@ func benchSealOpenBatch(b *testing.B, frames int, payloadSize int) {
 		in[i] = &Frame{SessionID: sid(byte(i)), Seq: uint64(i), Payload: pl}
 	}
 	var benchClient [ClientIDLen]byte
-	body, err := EncodeBatch(c, benchClient, in)
+	body, err := EncodeBatch(c, benchClient, in, 224)
 	if err != nil {
 		b.Fatalf("encode: %v", err)
 	}
@@ -133,7 +133,7 @@ func benchSealOpenBatch(b *testing.B, frames int, payloadSize int) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		body, err := EncodeBatch(c, benchClient, in)
+		body, err := EncodeBatch(c, benchClient, in, 224)
 		if err != nil {
 			b.Fatalf("encode: %v", err)
 		}
@@ -155,7 +155,7 @@ func TestDecodeBatch_TamperedBatchFails(t *testing.T) {
 		{SessionID: sid(1), Seq: 1, Payload: []byte("good2")},
 	}
 	var zeroClient [ClientIDLen]byte
-	body, _ := EncodeBatch(c, zeroClient, in)
+	body, _ := EncodeBatch(c, zeroClient, in, 224)
 	raw, _ := b64Encoding.DecodeString(string(body))
 	raw[len(raw)/2] ^= 0x01 // flip a bit in the middle of the ciphertext
 	out := make([]byte, b64Encoding.EncodedLen(len(raw)))
@@ -211,7 +211,7 @@ func TestEncodeDecodeBatch_Compressed(t *testing.T) {
 	for i := range clientID {
 		clientID[i] = byte(i + 1)
 	}
-	body, err := EncodeBatch(c, clientID, in)
+	body, err := EncodeBatch(c, clientID, in, 224)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestZstdFlagEmitted(t *testing.T) {
 	c := newTestCrypto(t)
 
 	// Highly compressible payload well above compressMinSize.
-	payload := bytes.Repeat([]byte("GooseRelayVPN zstd test payload — repeated for compressibility. "), 20)
+	payload := bytes.Repeat([]byte("ChaparCore zstd test payload — repeated for compressibility. "), 20)
 	if len(payload) < compressMinSize {
 		t.Fatalf("payload too small to trigger compression: %d < %d", len(payload), compressMinSize)
 	}
@@ -265,7 +265,7 @@ func TestZstdFlagEmitted(t *testing.T) {
 		clientID[i] = byte(i + 1)
 	}
 
-	body, err := EncodeBatch(c, clientID, frames)
+	body, err := EncodeBatch(c, clientID, frames, 224)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}

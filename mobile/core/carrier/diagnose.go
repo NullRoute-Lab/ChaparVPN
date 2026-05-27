@@ -9,8 +9,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/nullroute-lab/gooserelayvpn-androidclient/mobile/core/frame"
-	"github.com/nullroute-lab/gooserelayvpn-androidclient/mobile/core/protocol"
+	"github.com/nullroute-lab/chaparvpn-androidclient/mobile/core/frame"
+	"github.com/nullroute-lab/chaparvpn-androidclient/mobile/core/protocol"
 )
 
 // Diagnose performs a one-shot end-to-end health check against the first
@@ -20,7 +20,7 @@ import (
 //
 // The two probes:
 //
-//  1. GET <scriptURL>/exec — Apps Script's doGet returns "GooseRelay
+//  1. GET <scriptURL>/exec — Apps Script's doGet returns "ChaparCore
 //     forwarder OK". If we get HTML or 404 the deployment is wrong or
 //     not public.
 //  2. POST an encrypted probe batch — server should round-trip a valid
@@ -53,14 +53,23 @@ func (c *Client) Diagnose(ctx context.Context) error {
 	}
 	trimmed := bytes.TrimSpace(getBody)
 	var stats scriptStatsResponse
-	if len(trimmed) > 0 && trimmed[0] == '{' && json.Unmarshal(trimmed, &stats) == nil && stats.OK {
-		if stats.Version == 0 || stats.Protocol == 0 {
-			return fmt.Errorf("apps script deployment %s is outdated (missing version info).\n  Fix: redeploy apps_script/Code.gs and update script_keys", shortScriptKey(scriptURL))
+	isJSON := len(trimmed) > 0 && trimmed[0] == '{' && json.Unmarshal(trimmed, &stats) == nil
+
+	if isJSON {
+		// New format JSON stats with polymorphic response bodies
+		if !stats.OK {
+			return fmt.Errorf("apps script deployment %s returned not OK status: %s", shortScriptKey(scriptURL), string(trimmed))
 		}
-		if stats.Protocol != protocol.ProtocolVersion {
-			return fmt.Errorf("apps script protocol mismatch: script=%d client=%d.\n  Fix: redeploy apps_script/Code.gs", stats.Protocol, protocol.ProtocolVersion)
+		// If Version or Protocol are present they should be correct, but let's allow
+		// "ChaparCore forwarder OK" compatibility in the JSON logic if those fields are 0
+		if stats.Version != 0 && stats.Protocol != 0 {
+			if stats.Protocol != protocol.ProtocolVersion {
+				return fmt.Errorf("apps script protocol mismatch: script=%d client=%d.\n  Fix: redeploy apps_script/Code.gs", stats.Protocol, protocol.ProtocolVersion)
+			}
 		}
-	} else if bytes.Contains(getBody, []byte("GooseRelay")) {
+	} else if bytes.Contains(getBody, []byte("ChaparCore forwarder OK")) {
+		// Allow pristine health response
+	} else if bytes.Contains(getBody, []byte("ChaparCore")) {
 		return fmt.Errorf("apps script deployment %s is outdated (legacy text response).\n  Fix: redeploy apps_script/Code.gs and update script_keys", shortScriptKey(scriptURL))
 	} else {
 		return fmt.Errorf("unexpected response from apps script %s (HTTP %d): %s", shortScriptKey(scriptURL), getResp.StatusCode, snippet(getBody))
@@ -81,7 +90,7 @@ func (c *Client) Diagnose(ctx context.Context) error {
 		Flags:     frame.FlagACK,
 		Payload:   probePayload,
 	}
-	body, err := frame.EncodeBatch(c.aead, c.clientID, []*frame.Frame{probeFrame})
+	body, err := frame.EncodeBatch(c.aead, c.clientID, []*frame.Frame{probeFrame}, c.cfg.CompressionEntropyThreshold)
 	if err != nil {
 		return fmt.Errorf("internal: cannot encode probe batch: %w", err)
 	}
